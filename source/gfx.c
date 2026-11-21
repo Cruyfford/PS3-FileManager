@@ -459,13 +459,40 @@ static int prepare(const char *utf8, uint32_t *vis)
     return bidi_visual(logical, n, vis);
 }
 
+/* advance-only cache: measuring text never rasterizes glyphs (keeps the glyph atlas for drawing) */
+#define ADV_HASH 8192
+static uint32_t adv_key[ADV_HASH];
+static int16_t adv_val[ADV_HASH];
+
+static int glyph_adv(uint32_t cp, int size, int bold)
+{
+    if (size < 6) size = 6;
+    if (size > 40) size = 40;
+    bold = bold ? 1 : 0;
+    uint32_t key = (cp & 0x1FFFFF) | ((uint32_t)size << 21) | ((uint32_t)bold << 28) | 0x80000000u;
+    uint32_t h = (key * 2654435761u) % ADV_HASH;
+    for (int p = 0; p < 8; p++) {
+        uint32_t s = (h + p) % ADV_HASH;
+        if (adv_key[s] == key) return adv_val[s];
+        if (!adv_key[s]) break;
+    }
+    FT_Face f = face[bold];
+    int px = (int)(size * RENDER_SCALE + 0.5f);
+    FT_Set_Pixel_Sizes(f, 0, px);
+    FT_UInt gi = FT_Get_Char_Index(f, cp);
+    if (!gi && bold) { f = face[0]; FT_Set_Pixel_Sizes(f, 0, px); gi = FT_Get_Char_Index(f, cp); }
+    int adv = 0;
+    if (FT_Load_Glyph(f, gi, FT_LOAD_DEFAULT) == 0) adv = (int)(f->glyph->advance.x >> 6);
+    uint32_t slot = h;
+    for (int p = 0; p < 8; p++) { uint32_t s = (h + p) % ADV_HASH; if (!adv_key[s]) { slot = s; break; } }
+    adv_key[slot] = key; adv_val[slot] = (int16_t)adv;
+    return adv;
+}
+
 static float run_width(const uint32_t *cp, int n, int size, int bold)
 {
     float w = 0, inv = 1.0f / RENDER_SCALE;
-    for (int i = 0; i < n; i++) {
-        glyph_t *g = get_glyph(cp[i], size, bold);
-        if (g) w += g->adv * inv;
-    }
+    for (int i = 0; i < n; i++) w += glyph_adv(cp[i], size, bold) * inv;
     return w;
 }
 

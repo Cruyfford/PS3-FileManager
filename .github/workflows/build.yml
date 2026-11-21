@@ -38,6 +38,10 @@ jobs:
     - name: Build PKG
       run: make pkg
 
+    - name: Build Nova Browser PKG
+      working-directory: browser
+      run: make pkg
+
     - name: Upload PKG
       uses: actions/upload-artifact@v4
       with:
@@ -45,6 +49,8 @@ jobs:
         path: |
           FileManager.pkg
           FileManager.gnpdrm.pkg
+          browser/NovaBrowser.pkg
+          browser/NovaBrowser.gnpdrm.pkg
         if-no-files-found: error
 
     - name: Publish release
@@ -53,8 +59,10 @@ jobs:
       with:
         tag_name: latest
         name: File Manager (latest build)
-        body: "Build ${{ env.sha_name }} — install FileManager.pkg (use FileManager.gnpdrm.pkg if the first one is refused)."
+        body: "Build ${{ env.sha_name }} — File Manager: FileManager.pkg · Nova Browser: NovaBrowser.pkg (use the .gnpdrm.pkg version if the first one is refused)."
         make_latest: true
         files: |
           FileManager.pkg
           FileManager.gnpdrm.pkg
+          browser/NovaBrowser.pkg
+          browser/NovaBrowser.gnpdrm.pkg
