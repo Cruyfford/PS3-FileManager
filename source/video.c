@@ -89,6 +89,14 @@ static uint8_t *es_buf; static int es_len, es_cap, es_scan;
 static int es_seen_pic, es_seen_slice;
 static ptsmark_t es_pts[64]; static int es_npts;
 
+#define PQ 4
+typedef struct { uint8_t *buf; size_t cap; int w, h; double pts; } pq_t;
+static pq_t pq[PQ];
+static volatile uint32_t pq_w, pq_r;
+static sys_mutex_t pic_mtx; static int pic_mtx_ok;
+static volatile int draining;
+static void pq_reset(void);
+static void pq_free(void);
 static uint32_t ring_used(void);
 static int use_yuv; static uint32_t last_gp_err, last_gp_err2, gpi_err, got_pics;
 static volatile uint32_t vq_w, vq_r;
@@ -774,12 +782,6 @@ static void pic_dims(vdecPicture *pic, int *w, int *h)
 /* Decoded pictures are pulled out of the decoder as soon as they're ready (also from the decoder's own
  * PICOUT callback, as Movian does) into a small queue of ARGB frames; the main loop shows them on time.
  * The decoder only has a fixed pool of frame buffers: leaving pictures inside it stalls decoding. */
-#define PQ 4
-typedef struct { uint8_t *buf; size_t cap; int w, h; double pts; } pq_t;
-static pq_t pq[PQ];
-static volatile uint32_t pq_w, pq_r;
-static sys_mutex_t pic_mtx; static int pic_mtx_ok;
-static volatile int draining;
 static int yuv_ok;
 
 /* BT.601-ish integer YUV420P -> ARGB */
