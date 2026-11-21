@@ -2,6 +2,9 @@ name: Build PKG
 
 on: [ push, pull_request, workflow_dispatch ]
 
+permissions:
+  contents: write
+
 jobs:
   build_pkg:
     runs-on: ubuntu-22.04
@@ -43,3 +46,15 @@ jobs:
           FileManager.pkg
           FileManager.gnpdrm.pkg
         if-no-files-found: error
+
+    - name: Publish release
+      if: github.event_name != 'pull_request'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: latest
+        name: File Manager (latest build)
+        body: "Build ${{ env.sha_name }} — install FileManager.pkg (use FileManager.gnpdrm.pkg if the first one is refused)."
+        make_latest: true
+        files: |
+          FileManager.pkg
+          FileManager.gnpdrm.pkg
