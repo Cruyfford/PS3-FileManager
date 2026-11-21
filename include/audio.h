@@ -11,3 +11,4 @@ uint32_t audio_position_ms(void);
 uint32_t audio_duration_ms(void);      /* 0 if unknown */
 void audio_levels(float out[8]);       /* rough spectrum-like bars for the UI */
 int  audio_is_supported(const char *name);
+int  audio_sys_init(void);           /* shared libaudio init (music + video) */

@@ -334,6 +334,32 @@ texture_t gfx_make_thumb(texture_t src, int maxw, int maxh)
     return t;
 }
 
+texture_t gfx_create_l8(int w, int h)
+{
+    TL(); texture_t t = ya2d_createTexture(w, h, TINY3D_TEX_FORMAT_L8); TU();
+    return t;
+}
+
+uint8_t *gfx_texture_data(texture_t t) { return t ? (uint8_t *)t->data : NULL; }
+
+void gfx_draw_yuv(texture_t ty, texture_t tu, texture_t tv, float x, float y, float w, float h, float uw, float vh)
+{
+    if (!ty || !tu || !tv) return;
+    float z = Z();
+    tiny3d_SetTextureWrap(0, ty->textureOffset, ty->imageWidth, ty->imageHeight, ty->rowBytes, TINY3D_TEX_FORMAT_L8, TEXTWRAP_CLAMP, TEXTWRAP_CLAMP, TEXTURE_LINEAR);
+    tiny3d_SetTextureWrap(1, tu->textureOffset, tu->imageWidth, tu->imageHeight, tu->rowBytes, TINY3D_TEX_FORMAT_L8, TEXTWRAP_CLAMP, TEXTWRAP_CLAMP, TEXTURE_LINEAR);
+    tiny3d_SetTextureWrap(2, tv->textureOffset, tv->imageWidth, tv->imageHeight, tv->rowBytes, TINY3D_TEX_FORMAT_L8, TEXTWRAP_CLAMP, TEXTWRAP_CLAMP, TEXTURE_LINEAR);
+    tiny3d_Enable_YUV(USE_YUV_8BIT_TEXTURES);
+    tiny3d_SetPolygon(TINY3D_QUADS);
+    tiny3d_VertexPos(x, y, z);         tiny3d_VertexColor(0xFFFFFFFF); tiny3d_VertexTexture(0.0f, 0.0f);
+    tiny3d_VertexPos(x + w, y, z);     tiny3d_VertexColor(0xFFFFFFFF); tiny3d_VertexTexture(uw, 0.0f);
+    tiny3d_VertexPos(x + w, y + h, z); tiny3d_VertexColor(0xFFFFFFFF); tiny3d_VertexTexture(uw, vh);
+    tiny3d_VertexPos(x, y + h, z);     tiny3d_VertexColor(0xFFFFFFFF); tiny3d_VertexTexture(0.0f, vh);
+    tiny3d_End();
+    tiny3d_Disable_YUV();
+    tiny3d_Project2D();
+}
+
 texture_t gfx_load_png_file(const char *path)
 {
     return ya2d_loadPNGfromFile(path);

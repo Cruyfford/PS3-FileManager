@@ -266,11 +266,17 @@ static void join_thread(void)
     if (thr_alive) { u64 rv; sysThreadJoin(thr, &rv); thr_alive = 0; }
 }
 
+static int audio_inited;
+int audio_sys_init(void)
+{
+    if (!audio_inited) { if (audioInit() != 0) return 0; audio_inited = 1; }
+    return 1;
+}
+
 int audio_play(const char *path)
 {
-    static int audio_inited;
     audio_stop();
-    if (!audio_inited) { if (audioInit() != 0) return 0; audio_inited = 1; }
+    if (!audio_sys_init()) return 0;
     snprintf(cur_path, sizeof(cur_path), "%s", path);
     stop_req = 0; paused = 0; played_frames = 0;
     memset((void *)levels, 0, sizeof(levels));

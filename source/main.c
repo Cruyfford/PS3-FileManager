@@ -24,6 +24,7 @@
 #include "osk.h"
 #include "pkgtool.h"
 #include "audio.h"
+#include "video.h"
 #include "ftp.h"
 #include "archive.h"
 #include "arabic.h"
@@ -479,7 +480,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -886,9 +887,11 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_WEBMAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
+static int find_movian(void);
+static void ask_launch(int idx);
 
 static int cur_writable(void) { return vol_count && vols[vol_sel].writable; }
 
@@ -948,6 +951,7 @@ static void build_menu(void)
         if (m == M_EXTRACT && !(ent_count && ents[sel].type == FT_PKG && !marked_count())) continue;
         if (m == M_THEME) { int any = 0, mk = marked_count(); for (int i = 0; i < ent_count; i++) if (ents[i].type == FT_THEME && (mk ? ents[i].marked : i == sel)) any = 1; if (!any) continue; }
         if (m == M_WEBMAN) { if (!ent_count) continue; char fp[1400]; path_join(fp, sizeof(fp), cwd, ents[sel].name); if (!webman_is_game(ents[sel].name, ents[sel].is_dir, fp)) continue; }
+        if (m == M_MOVIAN && !(ent_count && !marked_count() && ents[sel].type == FT_VIDEO && find_movian())) continue;
         if (m == M_BUILD && !cursor_is_pkg_folder()) continue;
         if (m == M_EDITSFO) { char t[1400]; if (!cursor_sfo(t, sizeof(t))) continue; }
         if (m == M_EXTRACT_ARC && !(ent_count && archive_kind(ents[sel].name) != ARC_NONE)) continue;
@@ -1384,6 +1388,88 @@ static void handle_audio(void)
     if (in_pressed & (L | B_L1)) audio_step(-1);
     if (in_pressed & B_CANCEL) { audio_stop(); ui = UI_BROWSE; }
     else if (audio_state() == AUD_ENDED) audio_step(1);
+}
+
+/* ---------- built-in video player ---------- */
+static char vid_name[256];
+static uint64_t vid_last_input;
+static int vid_err_shown;
+
+static void video_start(int idx)
+{
+    char p[1400];
+    path_join(p, sizeof(p), cwd, ents[idx].name);
+    if (!video_supported(ents[idx].name)) {
+        if (find_movian()) { ask_launch(idx); return; }
+        show_toast(T(S_VID_FMT_NO)); return;
+    }
+    audio_stop();
+    snprintf(vid_name, sizeof(vid_name), "%s", ents[idx].name);
+    vid_last_input = gfx_frame();
+    vid_err_shown = 0;
+    ui = UI_VIDEO;
+    if (!video_open(p)) {
+        static const int msg[] = { S_VID_ERR_OPEN, S_VID_ERR_OPEN, S_VID_ERR_FORMAT, S_VID_ERR_CODEC, S_VID_ERR_DEC, S_VID_ERR_MEM };
+        int e = video_error();
+        show_toast(T(msg[e >= 0 && e <= 5 ? e : 1]));
+        video_close();
+        ui = UI_BROWSE;
+    }
+}
+
+static void draw_video(void)
+{
+    gfx_rect(0, 0, SCR_W, SCR_H, RGBA8(0, 0, 0, 255));
+    video_render(0, 0, SCR_W, SCR_H);
+    int vw, vhh, st = video_state();
+    if (!video_size(&vw, &vhh) && st == VID_PLAYING) {
+        float t = gfx_frame() / 60.0f;
+        for (int i = 0; i < 8; i++) {
+            float a = t * 4 + i * 0.785f;
+            gfx_circle(SCR_W / 2 + cosf(a) * 22, SCR_H / 2 - 10 + sinf(a) * 22, 4, RGBA8(255, 255, 255, 40 + i * 25));
+        }
+        gfx_text(SCR_W / 2, SCR_H / 2 + 30, T(S_LOADING), 13, 0, C_DIM, ALIGN_CENTER);
+    }
+    int show = st != VID_PLAYING || gfx_frame() - vid_last_input < 180;
+    if (!show) return;
+    /* top bar */
+    gfx_grad_v(0, 0, SCR_W, 70, RGBA8(0, 0, 0, 200), RGBA8(0, 0, 0, 0));
+    gfx_text_fit(RTL() ? SCR_W - 40 : 40, 22, SCR_W - 80, vid_name, 16, 1, C_TEXT, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+    /* bottom bar */
+    gfx_grad_v(0, SCR_H - 120, SCR_W, 120, RGBA8(0, 0, 0, 0), RGBA8(0, 0, 0, 220));
+    double pos = video_position(), dur = video_duration();
+    if (pos > dur) pos = dur;
+    float bx = 40, bw = SCR_W - 80, by = SCR_H - 70;
+    float p = dur > 0 ? (float)(pos / dur) : 0;
+    gfx_rrect(bx, by, bw, 6, 3, RGBA8(255, 255, 255, 40));
+    if (bw * p > 6) gfx_rrect_grad(bx, by, bw * p, 6, 3, RGBA8(120, 190, 255, 255), RGBA8(130, 80, 255, 255));
+    gfx_circle(bx + bw * p, by + 3, 7, RGBA8(255, 255, 255, 255));
+    char a1[24], a2[24];
+    fmt_time((uint32_t)pos, a1, sizeof(a1));
+    fmt_time((uint32_t)dur, a2, sizeof(a2));
+    gfx_text(bx, by + 16, a1, 12, 1, C_TEXT, ALIGN_LEFT);
+    gfx_text(bx + bw, by + 16, a2, 12, 0, C_DIM, ALIGN_RIGHT);
+    /* play/pause glyph */
+    float cx = SCR_W / 2, cy = by + 26;
+    if (st == VID_PAUSED) { gfx_rect(cx - 8, cy - 9, 5, 18, C_TEXT); gfx_rect(cx + 3, cy - 9, 5, 18, C_TEXT); }
+    else if (st == VID_ENDED) gfx_text(cx, cy - 8, T(S_STOP), 12, 1, C_TEXT, ALIGN_CENTER);
+    else gfx_circle(cx, cy, 4, RGBA8(255, 255, 255, 160));
+}
+
+static void handle_video(void)
+{
+    uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
+    if (in_pressed) vid_last_input = gfx_frame();
+    if (in_pressed & B_CANCEL) { video_close(); ui = UI_BROWSE; return; }
+    if (in_pressed & B_OK) {
+        if (video_state() == VID_ENDED) { video_seek(-(int)video_duration() - 5); }
+        else video_toggle_pause();
+    }
+    if (in_pressed & R) video_seek(10);
+    if (in_pressed & L) video_seek(-10);
+    if (in_pressed & B_R1) video_seek(60);
+    if (in_pressed & B_L1) video_seek(-60);
+    if (video_state() == VID_ERROR && !vid_err_shown) { vid_err_shown = 1; show_toast(T(S_VID_ERR_DEC)); video_close(); ui = UI_BROWSE; }
 }
 
 /* ---------- text editor ---------- */
@@ -1849,6 +1935,7 @@ static void run_menu_action(int m)
     ui = UI_BROWSE;
     switch (m) {
     case M_OPEN: { char p[1400]; path_join(p, sizeof(p), cwd, ents[sel].name); open_dir(p, NULL); break; }
+    case M_MOVIAN: ask_launch(sel); break;
     case M_INSTALL: confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); break;
     case M_WEBMAN: ask_launch(sel); break;
     case M_THEME: {
@@ -1972,7 +2059,8 @@ static void handle_browse(void)
         else if (e->type == FT_PKG) { confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); }
         else if (!strcasecmp(e->name, "PARAM.SFO")) run_menu_action(M_EDITSFO);
         else if (archive_kind(e->name) != ARC_NONE && cur_writable()) run_menu_action(M_EXTRACT_ARC);
-        else if (launch_kind(e->name) != SYS_NONE || e->type == FT_VIDEO) ask_launch(sel);
+        else if (e->type == FT_VIDEO) video_start(sel);
+        else if (launch_kind(e->name) != SYS_NONE) ask_launch(sel);
         else if (!e->is_dir) { char fp[1400]; path_join(fp, sizeof(fp), cwd, e->name); if (webman_is_game(e->name, 0, fp)) ask_launch(sel); else open_entry(sel); }
         else open_entry(sel);
     }
@@ -2181,6 +2269,7 @@ int main(void)
             if (++scan_frames >= 3) { scan_frames = 0; do_launch(); }
             break;
         case UI_AUDIO: handle_audio(); break;
+        case UI_VIDEO: handle_video(); break;
         case UI_TEXT: handle_text(); break;
         case UI_HEX: handle_hex(); break;
         case UI_SFO:
@@ -2199,6 +2288,16 @@ int main(void)
         if (ui == UI_BROWSE) lazy_parse();
 
         gfx_begin_frame();
+        if (ui == UI_VIDEO) {
+            draw_video();
+            if (gfx_frame() - vid_last_input < 180 || video_state() != VID_PLAYING) {
+                hint_t h[5] = { { ok_icon, S_PAUSE }, { BTN_L1, S_SEEK60 }, { BTN_R1, S_SEEK60 }, { cancel_icon, S_STOP } };
+                draw_hints(h, 4);
+            }
+            draw_toast();
+            gfx_end_frame();
+            continue;
+        }
         draw_background(t);
         draw_header();
         draw_sidebar();
@@ -2208,7 +2307,7 @@ int main(void)
             hint_t h[7]; int n = 0;
             if (focus_list && ent_count) {
                 entry_t *e = &ents[sel];
-                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : e->type == FT_THEME ? S_VIEW : e->type == FT_VIDEO ? S_PLAY_MOVIAN : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
+                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : e->type == FT_THEME ? S_VIEW : e->type == FT_VIDEO ? S_PLAY : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
                           audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC :
                           launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY :
                           !strcasecmp(ext_of(e->name), "iso") ? S_PLAY : S_PROPS;
@@ -2266,6 +2365,7 @@ int main(void)
 
     if (inst_status()->state == INST_RUNNING) { inst_cancel(); while (inst_status()->state == INST_RUNNING) usleep(10000); }
     if (ops_status()->state == OPS_RUNNING) { ops_cancel(); while (ops_status()->state == OPS_RUNNING) usleep(10000); }
+    video_close();
     audio_stop();
     ftp_stop();
     loader_stop();

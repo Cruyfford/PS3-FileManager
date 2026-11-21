@@ -175,6 +175,15 @@ static const char *en[S_COUNT] = {
     [S_MOVIAN_COPY] = "Movian can't read exFAT/NTFS: the video is copied to the HDD first",
     [S_NO_MOVIAN] = "Install Movian to play videos",
     [S_PLAY_MOVIAN] = "Play in Movian",
+    [S_VID_ERR_OPEN] = "Can't open the video file",
+    [S_VID_ERR_FORMAT] = "Not a valid MP4 file",
+    [S_VID_ERR_CODEC] = "Video codec not supported (H.264 only)",
+    [S_VID_ERR_DEC] = "Video decoder failed to start",
+    [S_VID_ERR_MEM] = "Not enough memory for this video",
+    [S_VID_FMT_NO] = "Built-in player supports MP4 / M4V / MOV",
+    [S_SEEK] = "Seek ±10s",
+    [S_SEEK60] = "±1 min",
+    [S_LOADING] = "Loading…",
 };
 
 static const char *ar[S_COUNT] = {
@@ -350,6 +359,15 @@ static const char *ar[S_COUNT] = {
     [S_MOVIAN_COPY] = "Movian لا يقرأ exFAT/NTFS: سيُنسخ الفيديو إلى الهارد أولاً",
     [S_NO_MOVIAN] = "ثبّت Movian لتشغيل الفيديو",
     [S_PLAY_MOVIAN] = "تشغيل في Movian",
+    [S_VID_ERR_OPEN] = "تعذر فتح ملف الفيديو",
+    [S_VID_ERR_FORMAT] = "ليس ملف MP4 صالحاً",
+    [S_VID_ERR_CODEC] = "ترميز الفيديو غير مدعوم (H.264 فقط)",
+    [S_VID_ERR_DEC] = "فشل تشغيل مفكك الفيديو",
+    [S_VID_ERR_MEM] = "الذاكرة غير كافية لهذا الفيديو",
+    [S_VID_FMT_NO] = "المشغل المدمج يدعم MP4 / M4V / MOV",
+    [S_SEEK] = "تقديم/ترجيع 10ث",
+    [S_SEEK60] = "±1 دقيقة",
+    [S_LOADING] = "جارٍ التحميل…",
 };
 
 const char *T(int id)
