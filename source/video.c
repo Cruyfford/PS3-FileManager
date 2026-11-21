@@ -75,6 +75,8 @@ static volatile double video_start_pts;
 static float *ring;
 static volatile uint32_t ring_w, ring_r;
 static volatile uint64_t played;
+static uint32_t deficit;
+static double next_pic_pts = -1;
 
 /* frame upload */
 static texture_t tex[2];
@@ -110,8 +112,8 @@ const char *video_format_info(void) { return fmt_info; }
 const char *video_debug_info(void)
 {
     static char b[160];
-    snprintf(b, sizeof(b), "q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
-             (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
+    snprintf(b, sizeof(b), "t %.2f next %.2f  q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
+             video_position(), next_pic_pts, (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
              asi >= 0 && !audio_port_ok ? " (port off)" : "", (unsigned)(ring ? ring_used() : 0), frame_w, frame_h, demux_done);
     return b;
 }
@@ -430,9 +432,15 @@ static void audio_thread(void *arg)
     while (!stop_demux) {
         if (next == (u32)*ri) { usleep(1000); continue; }
         float *blk = base + 2 * AUDIO_BLOCK_SAMPLES * next;
-        if (paused || ring_used() < AUDIO_BLOCK_SAMPLES || !audio_started) memset(blk, 0, sizeof(float) * 2 * AUDIO_BLOCK_SAMPLES);
+        if (paused || !audio_started) memset(blk, 0, sizeof(float) * 2 * AUDIO_BLOCK_SAMPLES);
         else {
-            for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) { uint32_t r = ring_r % RING_FR; blk[i * 2] = ring[r * 2]; blk[i * 2 + 1] = ring[r * 2 + 1]; ring_r++; }
+            /* the clock is the output time: it always advances while playing. On underrun we play silence and
+             * remember the gap, then skip that much late audio so sound stays in sync with the picture. */
+            uint32_t used = ring_used();
+            if (deficit && used) { uint32_t k = deficit < used ? deficit : used; ring_r += k; deficit -= k; used -= k; }
+            uint32_t n = used < AUDIO_BLOCK_SAMPLES ? used : AUDIO_BLOCK_SAMPLES;
+            for (uint32_t i = 0; i < n; i++) { uint32_t r = ring_r % RING_FR; blk[i * 2] = ring[r * 2]; blk[i * 2 + 1] = ring[r * 2 + 1]; ring_r++; }
+            if (n < AUDIO_BLOCK_SAMPLES) { memset(blk + n * 2, 0, sizeof(float) * 2 * (AUDIO_BLOCK_SAMPLES - n)); deficit += AUDIO_BLOCK_SAMPLES - n; }
             played += AUDIO_BLOCK_SAMPLES;
         }
         next = (next + 1) % AUDIO_BLOCK_8;
@@ -513,7 +521,7 @@ static void stop_threads(void)
 static void reset_pipeline_state(void)
 {
     au_sent = au_done = pics_ready = 0;
-    ring_w = ring_r = 0; played = 0;
+    ring_w = ring_r = 0; played = 0; deficit = 0; next_pic_pts = -1;
     audio_started = 0; audio_base = 0;
     wall_started = 0; wall_pause_acc = 0;
     last_pic_pts = -1; out_count = 0; seq_base = -1;
@@ -771,7 +779,10 @@ static void fetch_pictures(void)
             if (last_pic_pts >= 0) { double d = pts - last_pic_pts; if (d > 0.005 && d < 0.2 && d < frame_dur * 1.5 && d > frame_dur * 0.4) frame_dur = frame_dur * 0.9 + d * 0.1; }
         } else pts = last_pic_pts >= 0 ? last_pic_pts + frame_dur : (video_start_pts >= 0 ? video_start_pts : 0);
         if (!wall_started) { wall_started = 1; wall_base = pts; wall_t0 = now_us(); wall_pause_acc = 0; if (paused) wall_pause_start = wall_t0; now = video_position(); }
-        if (pts > now + 0.010 && cur_tex >= 0) break;
+        next_pic_pts = pts;
+        /* never let a picture block the decoder for long: if the input queue backs up, show it anyway */
+        int backed_up = (vq_w - vq_r) > VQ * 3 / 4;
+        if (pts > now + 0.010 && cur_tex >= 0 && !backed_up) break;
         int w, h;
         pic_dims(pic, &w, &h);
         vdecPictureFormat fmt = { VDEC_PICFMT_ARGB32, h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601, 0xFF };
