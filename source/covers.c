@@ -230,37 +230,103 @@ static int fetch(CURL *c, const char *url, mem_t *m) { return fetch_raw(c, url, 
 /* ---------------------------------------------------------------- movies */
 
 /* "The.Dark.Knight.2008.1080p.BluRay.x264.mp4" -> query "The Dark Knight 2008" */
-static void movie_query(const char *name, char *out, int n)
+
+/* "[SubsPlease] Oshi no Ko - 05 (1080p) [A1B2].mkv", "Oshi.no.Ko.S02E03.mkv", "WITanime.com Oshi no Ko EP 05.mp4",
+ * "One Piece 1071.mp4" -> "Oshi no Ko" / "One Piece". Movies keep their year. */
+static void video_query(const char *name, char *out, int n)
 {
-    char t[256];
-    snprintf(t, sizeof(t), "%s", name);
-    char *dot = strrchr(t, '.'); if (dot) *dot = 0;
-    for (char *p = t; *p; p++) if (*p == '.' || *p == '_' || *p == '[' || *p == ']' || *p == '(' || *p == ')') *p = ' ';
-    static const char *junk[] = { "1080p", "720p", "2160p", "480p", "4k", "bluray", "blu-ray", "brrip", "bdrip", "webrip", "web-dl", "web",
-                                  "hdrip", "dvdrip", "x264", "x265", "h264", "hevc", "aac", "hdtv", "yify", "yts", "remux", NULL };
+    char t[300];
+    int k = 0;
+    int depth = 0;
+    const char *e = strrchr(name, '.');
+    int len = e ? (int)(e - name) : (int)strlen(name);
+    for (int i = 0; i < len && k < (int)sizeof(t) - 1; i++) {
+        char c = name[i];
+        if (c == '[' || c == '(' || c == '{') { depth++; continue; }
+        if (c == ']' || c == ')' || c == '}') { if (depth) depth--; t[k++] = ' '; continue; }
+        if (depth) continue;
+        t[k++] = (c == '.' || c == '_' || c == '+') ? ' ' : c;
+    }
+    t[k] = 0;
+    static const char *stop[] = { "1080p", "720p", "2160p", "480p", "360p", "4k", "bluray", "blu-ray", "brrip", "bdrip", "webrip", "web-dl", "web",
+        "hdrip", "dvdrip", "x264", "x265", "h264", "h265", "hevc", "aac", "hdtv", "yify", "yts", "remux", "ep", "episode", "eps", "end", "final",
+        "\xd8\xa7\xd9\x84\xd8\xad\xd9\x84\xd9\x82\xd8\xa9", "\xd8\xad\xd9\x84\xd9\x82\xd8\xa9", "-", "|", NULL };
     char *words[64]; int nw = 0;
     char *save = NULL;
     for (char *w = strtok_r(t, " ", &save); w && nw < 64; w = strtok_r(NULL, " ", &save)) words[nw++] = w;
     int o = 0;
     out[0] = 0;
     for (int i = 0; i < nw; i++) {
-        int is_junk = 0;
-        for (int j = 0; junk[j]; j++) if (!strcasecmp(words[i], junk[j])) is_junk = 1;
-        if (is_junk) break;
-        int year = strlen(words[i]) == 4 && (words[i][0] == '1' || words[i][0] == '2') && words[i][1] >= '0' && words[i][1] <= '9';
-        o += snprintf(out + o, n - o, "%s%s", o ? " " : "", words[i]);
-        if (year && i > 0) break;          /* title ends at the year */
+        char *w = words[i];
+        int l = strlen(w);
+        /* site tags like WITanime.com were split by the dot: drop "com"/"net"/"org" and the word before */
+        if (i + 1 < nw && (!strcasecmp(words[i + 1], "com") || !strcasecmp(words[i + 1], "net") || !strcasecmp(words[i + 1], "org") || !strcasecmp(words[i + 1], "tv"))) { i++; continue; }
+        if (strcasestr(w, "anime") && (strcasestr(w, "wit") || strcasestr(w, "blkom") || strcasestr(w, "4up") || strcasestr(w, "slayer") || strcasestr(w, "cloud"))) continue;
+        int is_stop = 0;
+        for (int j = 0; stop[j]; j++) if (!strcasecmp(w, stop[j])) is_stop = 1;
+        if (is_stop) { if (o) break; else continue; }
+        /* S01E05 / S2 / E05 / 05 / 05v2 / 1071 : the title ends here */
+        int digits = 0; for (int q = 0; q < l; q++) if (w[q] >= '0' && w[q] <= '9') digits++;
+        if ((w[0] == 'S' || w[0] == 's') && l >= 2 && w[1] >= '0' && w[1] <= '9') { if (o) break; else continue; }
+        if ((w[0] == 'E' || w[0] == 'e') && l >= 2 && w[1] >= '0' && w[1] <= '9') { if (o) break; else continue; }
+        int year = l == 4 && digits == 4 && ((w[0] == '1' && w[1] == '9') || (w[0] == '2' && w[1] == '0'));
+        if (digits && digits >= l - 2 && !year && o) break;
+        o += snprintf(out + o, n - o, "%s%s", o ? " " : "", w);
+        if (year && i > 0) break;
         if (o >= n - 1) break;
     }
 }
 
-static int looks_like_movie(const char *name, uint64_t size)
+
+static void norm_title(const char *in, char *out, int n)
 {
-    if (size >= 300ULL * 1024 * 1024) return 1;
-    for (const char *p = name; *p; p++)
-        if ((p[0] == '1' && p[1] == '9') || (p[0] == '2' && p[1] == '0'))
-            if (p[2] >= '0' && p[2] <= '9' && p[3] >= '0' && p[3] <= '9' && (p == name || p[-1] < '0' || p[-1] > '9') && (p[4] < '0' || p[4] > '9')) return 1;
-    return 0;
+    int k = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && k < n - 1; p++) {
+        if (*p >= 'A' && *p <= 'Z') out[k++] = *p + 32;
+        else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p >= 0x80) out[k++] = *p;
+    }
+    out[k] = 0;
+}
+
+/* anime cover via the Jikan (MyAnimeList) API; only accepted when a title really matches the file name */
+static int try_anime(CURL *c, const char *query, mem_t *m)
+{
+    char url[1024], nq[300];
+    char *eq = curl_easy_escape(c, query, 0);
+    snprintf(url, sizeof(url), "https://api.jikan.moe/v4/anime?q=%s&limit=8", eq);
+    curl_free(eq);
+    if (!fetch_raw(c, url, m, 0) || !m->len) return 0;
+    m->data[m->len < m->cap ? m->len : m->len - 1] = 0;
+    norm_title(query, nq, sizeof(nq));
+    if (strlen(nq) < 2) return 0;
+    char *js = (char *)m->data;
+    char img[900] = "";
+    /* walk results: each starts with "mal_id" */
+    for (char *it = strstr(js, "{\"mal_id\":"); it && !img[0]; ) {
+        char *next = strstr(it + 10, "{\"mal_id\":");
+        /* titles inside this item */
+        int match = 0;
+        for (char *tp = strstr(it, "\"title\":\""); tp && (!next || tp < next) && !match; tp = strstr(tp + 9, "\"title\":\"")) {
+            char tt[300]; int k = 0;
+            for (char *q = tp + 9; *q && *q != '"' && k < 299; q++) { if (*q == '\\') { q++; if (!*q) break; } tt[k++] = *q; }
+            tt[k] = 0;
+            char nt[300]; norm_title(tt, nt, sizeof(nt));
+            if (nt[0] && (!strcmp(nt, nq) || (strlen(nq) >= 4 && strstr(nt, nq)) || (strlen(nt) >= 4 && strstr(nq, nt)))) match = 1;
+        }
+        if (match) {
+            char *iu = strstr(it, "\"large_image_url\":\"");
+            if (!iu || (next && iu > next)) iu = strstr(it, "\"image_url\":\"");
+            if (iu && (!next || iu < next)) {
+                iu = strchr(iu + 2, ':') + 2;
+                int k = 0;
+                for (; *iu && *iu != '"' && k < (int)sizeof(img) - 1; iu++) { if (*iu == '\\') continue; img[k++] = *iu; }
+                img[k] = 0;
+            }
+        }
+        it = next;
+    }
+    if (strncmp(img, "https://", 8)) return 0;
+    return fetch(c, img, m);
 }
 
 /* poster via Wikipedia: search "<title> film", take the page's lead image */
@@ -381,7 +447,11 @@ static int try_libretro(CURL *c, int sys, const char *game, mem_t *m)
 static int download(CURL *c, const job_t *j, mem_t *m)
 {
     char url[512];
-    if (j->sys == S_VIDEO) return try_wikipedia(c, j->id, m);
+    if (j->sys == S_VIDEO) {
+        if (try_anime(c, j->id, m)) return 1;
+        m->len = 0;
+        return try_wikipedia(c, j->id, m);
+    }
     if (j->sys == S_PS2 || j->sys == S_PS1) {
         if (j->id[4] == '-') {   /* serial */
             snprintf(url, sizeof(url), "https://raw.githubusercontent.com/xlenore/%s/main/covers/default/%s.jpg",
@@ -535,7 +605,7 @@ int covers_lookup(const char *full, const char *name, int is_dir, char *out, int
 
     if (sys == S_VIDEO) {
         sanitize(name, tmp, sizeof(tmp));
-        snprintf(key, sizeof(key), "v_%s", tmp);
+        snprintf(key, sizeof(key), "v2_%s", tmp);
         int st = cached(key, out, n);
         if (st != CV_NONE) return st;
         /* 1) cover embedded in the file */
@@ -550,13 +620,7 @@ int covers_lookup(const char *full, const char *name, int is_dir, char *out, int
             }
         }
         /* 2) movie poster online */
-        uint64_t sz = 0; int d = 0;
-        vfs_stat(full, &d, &sz);
-        if (!looks_like_movie(name, sz)) {
-            char miss[700]; snprintf(miss, sizeof(miss), "%s/%s.none", cache_dir, key); save(miss, "", 0);
-            return CV_MISSING;
-        }
-        movie_query(name, id, sizeof(id));
+        video_query(name, id, sizeof(id));
         if (!id[0]) return CV_NONE;
         return queue(S_VIDEO, id, key);
     }
