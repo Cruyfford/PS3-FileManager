@@ -63,7 +63,7 @@ static int need_headers;
 static uint8_t sps_pps[1024]; static int sps_pps_len;
 
 /* timing */
-static volatile double audio_base; static volatile int audio_started;
+static volatile double audio_base; static volatile int audio_started; static volatile int audio_port_ok;
 static double wall_base; static uint64_t wall_t0, wall_pause_acc, wall_pause_start; static int wall_started;
 static double frame_dur = 1.0 / 25;
 static double last_pic_pts = -1;
@@ -77,7 +77,7 @@ static volatile uint32_t ring_w, ring_r;
 static volatile uint64_t played;
 
 /* frame upload */
-static texture_t tex[2][3];
+static texture_t tex[2];
 static int tex_w, tex_h, cur_tex = -1, frame_w, frame_h;
 static uint8_t *frame; static int frame_cap;
 
@@ -103,6 +103,16 @@ int video_error(void) { return verr; }
 const char *video_error_detail(void) { return err_detail; }
 const char *video_audio_warning(void) { return audio_warn; }
 const char *video_format_info(void) { return fmt_info; }
+
+/* small diagnostics line shown in the player overlay (helps when testing on the console) */
+const char *video_debug_info(void)
+{
+    static char b[160];
+    snprintf(b, sizeof(b), "au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
+             (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
+             asi >= 0 && !audio_port_ok ? " (port off)" : "", (unsigned)(ring ? ring_used() : 0), frame_w, frame_h, demux_done);
+    return b;
+}
 double video_duration(void) { return duration; }
 int video_size(int *w, int *h) { *w = frame_w; *h = frame_h; return frame_w > 0; }
 double video_sub_delay(void) { return sub_delay; }
@@ -113,7 +123,7 @@ static void unlock_subs(void) { if (sub_mtx_ok) sysMutexUnlock(sub_mtx); }
 
 double video_position(void)
 {
-    if (asi >= 0 && audio_started) {
+    if (asi >= 0 && audio_started && audio_port_ok) {
         double t = audio_base + (double)played / OUT_RATE - (8.0 * AUDIO_BLOCK_SAMPLES) / OUT_RATE;
         return t < audio_base ? audio_base : t;
     }
@@ -151,7 +161,7 @@ static int vdec_start(int codec)
     if (vdecOpen(&type, &cfg, &cl, &vh) != 0) { vh = 0; return 0; }
     if (vdecStartSequence(vh) != 0) return 0;
     for (int i = 0; i < AU_SLOTS; i++) if (!(au_buf[i] = (uint8_t *)memalign(128, AU_MAX))) return 0;
-    frame_cap = 1920 * 1088 * 3 / 2;
+    frame_cap = 1920 * 1088 * 4;
     if (!(frame = (uint8_t *)memalign(128, frame_cap))) { frame_cap = 0; return 0; }
     return 1;
 }
@@ -248,7 +258,7 @@ static void vdec_end_and_drain(void)
     if (!vh) return;
     seq_done = 0;
     vdecEndSequence(vh);
-    vdecPictureFormat f = { VDEC_PICFMT_YUV420P, VDEC_COLOR_MATRIX_BT709, 0 };
+    vdecPictureFormat f = { VDEC_PICFMT_ARGB32, VDEC_COLOR_MATRIX_BT709, 0xFF };
     for (int i = 0; i < 400 && !seq_done; i++) {          /* up to ~2 s */
         u32 a;
         while (vdecGetPicItem(vh, &a) == 0 && a) { if (frame) vdecGetPicture(vh, &f, frame); else break; }
@@ -366,12 +376,13 @@ static void audio_thread(void *arg)
     audioPortParam prm = { AUDIO_PORT_2CH, AUDIO_BLOCK_8, AUDIO_PORT_INITLEVEL, 1.0f };
     audioPortConfig cfg;
     u32 port;
-    if (audioPortOpen(&prm, &port) != 0) { sysThreadExit(0); return; }
+    if (audioPortOpen(&prm, &port) != 0) { audio_port_ok = 0; sysThreadExit(0); return; }
     audioGetPortConfig(port, &cfg);
     audioPortStart(port);
     volatile u64 *ri = (volatile u64 *)(u64)cfg.readIndex;
     float *base = (float *)(u64)cfg.audioDataStart;
     u32 next = 1;
+    audio_port_ok = 1;
     while (!stop_demux) {
         if (next == (u32)*ri) { usleep(1000); continue; }
         float *blk = base + 2 * AUDIO_BLOCK_SAMPLES * next;
@@ -384,6 +395,7 @@ static void audio_thread(void *arg)
     }
     audioPortStop(port);
     audioPortClose(port);
+    audio_port_ok = 0;
     sysThreadExit(0);
 }
 
@@ -420,6 +432,7 @@ static void demux_thread(void *arg)
                 audio_base = pk.pts >= 0 ? pk.pts : (first_key_pts >= 0 ? first_key_pts : 0);
                 audio_started = 1;
             }
+            if (th_audio_on && !audio_port_ok && audio_started && ring_used() > RING_FR / 2) continue;   /* port failed: drop audio */
             adec_decode(ad, pk.data, pk.size, push_pcm, NULL);
         } else if (pk.stream == sub_stream && sub_stream >= 0) {
             stream_t *s = &dmx->st[pk.stream];
@@ -585,7 +598,7 @@ int video_open(const char *path)
 
 static void free_textures(void)
 {
-    for (int b = 0; b < 2; b++) for (int p = 0; p < 3; p++) { if (tex[b][p]) gfx_free_texture(tex[b][p]); tex[b][p] = NULL; }
+    for (int b = 0; b < 2; b++) { if (tex[b]) gfx_free_texture(tex[b]); tex[b] = NULL; }
     tex_w = tex_h = 0;
 }
 
@@ -676,15 +689,10 @@ int video_cycle_audio(char *label, int n)
 
 static void ensure_textures(int w, int h)
 {
-    int aw = (w + 63) & ~63, ah = (h + 1) & ~1;
-    if (tex_w == aw && tex_h == ah) return;
+    if (tex_w == w && tex_h == h) return;
     free_textures();
-    for (int b = 0; b < 2; b++) {
-        tex[b][0] = gfx_create_l8(aw, ah);
-        tex[b][1] = gfx_create_l8(aw / 2, ah / 2);
-        tex[b][2] = gfx_create_l8(aw / 2, ah / 2);
-    }
-    tex_w = aw; tex_h = ah;
+    for (int b = 0; b < 2; b++) tex[b] = gfx_create_argb(w, h);
+    tex_w = w; tex_h = h;
 }
 
 static void pic_dims(vdecPicture *pic, int *w, int *h)
@@ -719,7 +727,7 @@ static void fetch_pictures(void)
         if (pts > now + 0.010 && cur_tex >= 0) break;
         int w, h;
         pic_dims(pic, &w, &h);
-        vdecPictureFormat fmt = { VDEC_PICFMT_YUV420P, h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601, 0xFF };
+        vdecPictureFormat fmt = { VDEC_PICFMT_ARGB32, h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601, 0xFF };
         if (vdecGetPicture(vh, &fmt, frame) != 0) break;
         if (pics_ready > 0) pics_ready--;
         out_count++;
@@ -728,11 +736,8 @@ static void fetch_pictures(void)
         if (pts < now - 0.080 && pics_ready > 1) continue;
         ensure_textures(w, h);
         int b = (cur_tex + 1) & 1;
-        if (!tex[b][0] || !tex[b][1] || !tex[b][2]) break;
-        uint8_t *dy = gfx_texture_data(tex[b][0]), *du = gfx_texture_data(tex[b][1]), *dv = gfx_texture_data(tex[b][2]);
-        const uint8_t *sy = frame, *su = frame + w * h, *sv = su + (w / 2) * (h / 2);
-        for (int y = 0; y < h; y++) memcpy(dy + y * tex_w, sy + y * w, w);
-        for (int y = 0; y < h / 2; y++) { memcpy(du + y * (tex_w / 2), su + y * (w / 2), w / 2); memcpy(dv + y * (tex_w / 2), sv + y * (w / 2), w / 2); }
+        if (!tex[b]) break;
+        memcpy(gfx_texture_data(tex[b]), frame, (size_t)w * h * 4);
         cur_tex = b; frame_w = w; frame_h = h;
         break;
     }
@@ -746,6 +751,5 @@ void video_render(float x, float y, float w, float h)
     float sc = w / frame_w;
     if (h / frame_h < sc) sc = h / frame_h;
     float dw = frame_w * sc, dh = frame_h * sc;
-    gfx_draw_yuv(tex[cur_tex][0], tex[cur_tex][1], tex[cur_tex][2], x + (w - dw) / 2, y + (h - dh) / 2, dw, dh,
-                 (float)frame_w / tex_w, (float)frame_h / tex_h);
+    gfx_texture(tex[cur_tex], x + (w - dw) / 2, y + (h - dh) / 2, dw, dh, 0xFFFFFFFF);
 }

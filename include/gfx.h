@@ -37,6 +37,7 @@ int gfx_texture_size(texture_t t, int *w, int *h);
 texture_t gfx_make_thumb(texture_t src, int maxw, int maxh);
 /* 8-bit luminance texture (for video planes); pitch = width */
 texture_t gfx_create_l8(int w, int h);
+texture_t gfx_create_argb(int w, int h);
 uint8_t *gfx_texture_data(texture_t t);
 /* draw Y/U/V L8 planes with tiny3d's YUV shader; uw/vh = used fraction of each texture */
 void gfx_draw_yuv(texture_t ty, texture_t tu, texture_t tv, float x, float y, float w, float h, float uw, float vh);

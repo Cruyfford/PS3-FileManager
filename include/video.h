@@ -26,3 +26,4 @@ int  video_cycle_subtitle(char *label, int n);    /* switches to the next option
 int  video_cycle_audio(char *label, int n);       /* 0 = only one track */
 void video_sub_delay_add(double d);
 double video_sub_delay(void);
+const char *video_debug_info(void);

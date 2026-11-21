@@ -340,6 +340,12 @@ texture_t gfx_create_l8(int w, int h)
     return t;
 }
 
+texture_t gfx_create_argb(int w, int h)
+{
+    TL(); texture_t t = ya2d_createTexture(w, h, TINY3D_TEX_FORMAT_A8R8G8B8); TU();
+    return t;
+}
+
 uint8_t *gfx_texture_data(texture_t t) { return t ? (uint8_t *)t->data : NULL; }
 
 void gfx_draw_yuv(texture_t ty, texture_t tu, texture_t tv, float x, float y, float w, float h, float uw, float vh)

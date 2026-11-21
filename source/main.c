@@ -1487,6 +1487,7 @@ static void draw_video(void)
         if (video_sub_delay() != 0) { char dl[48]; snprintf(dl, sizeof(dl), T(S_SUB_DELAY_L), video_sub_delay()); snprintf(info, sizeof(info), "%s  ·  %s", video_format_info(), dl); }
         else snprintf(info, sizeof(info), "%s", video_format_info());
         gfx_text_fit(RTL() ? SCR_W - 40 : 40, 40, SCR_W - 80, info, 11, 0, C_DIM, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+        gfx_text_fit(RTL() ? SCR_W - 40 : 40, 56, SCR_W - 80, video_debug_info(), 10, 0, RGBA8(140, 150, 190, 200), RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
     }
     /* bottom bar */
     gfx_grad_v(0, SCR_H - 120, SCR_W, 120, RGBA8(0, 0, 0, 0), RGBA8(0, 0, 0, 220));
