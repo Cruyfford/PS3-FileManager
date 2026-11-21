@@ -166,6 +166,11 @@ static const char *en[S_COUNT] = {
     [S_WM_NO_CACHE] = "Not in webMAN's list yet: refresh webMAN (prepISO) first",
     [S_WM_ERR] = "webMAN couldn't mount this game",
     [S_COVERS] = "Download covers",
+    [S_THEME_INSTALL] = "Install theme",
+    [S_THEME_INSTALLED] = "Installed",
+    [S_THEME_APPLY] = "Apply it: Settings > Theme Settings > Theme (restart if it isn't listed)",
+    [S_THEME_NO_PREVIEW] = "No preview image in this theme",
+    [S_THEME] = "Theme",
 };
 
 static const char *ar[S_COUNT] = {
@@ -332,6 +337,11 @@ static const char *ar[S_COUNT] = {
     [S_WM_NO_CACHE] = "ليست في قائمة webMAN بعد: حدّث webMAN (prepISO) أولاً",
     [S_WM_ERR] = "تعذّر على webMAN تركيب اللعبة",
     [S_COVERS] = "تحميل أغلفة الألعاب",
+    [S_THEME_INSTALL] = "تثبيت الثيم",
+    [S_THEME_INSTALLED] = "مثبّت",
+    [S_THEME_APPLY] = "طبّقه من: الإعدادات > إعدادات الثيم > الثيم (أعد التشغيل إن لم يظهر)",
+    [S_THEME_NO_PREVIEW] = "لا توجد صورة معاينة في هذا الثيم",
+    [S_THEME] = "ثيم",
 };
 
 const char *T(int id)

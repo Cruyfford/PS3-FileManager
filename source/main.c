@@ -30,6 +30,7 @@
 #include "launcher.h"
 #include "webman.h"
 #include "covers.h"
+#include "theme.h"
 #define SYS_WEBMAN 100
 
 #define APP_DIR   "/dev_hdd0/game/CRPK00001/USRDIR"
@@ -197,14 +198,14 @@ static const char *ext_of(const char *n)
 }
 
 /* =========================================================== file types */
-enum { FT_DIR, FT_PKG, FT_DISC, FT_IMAGE, FT_VIDEO, FT_AUDIO, FT_ARCHIVE, FT_SYSTEM, FT_TEXT, FT_OTHER };
+enum { FT_DIR, FT_PKG, FT_DISC, FT_IMAGE, FT_VIDEO, FT_AUDIO, FT_ARCHIVE, FT_SYSTEM, FT_TEXT, FT_OTHER, FT_THEME };
 
 static int file_type(const char *name, int is_dir)
 {
     if (is_dir) return FT_DIR;
     const char *e = ext_of(name);
     static const struct { const char *ext; int t; } map[] = {
-        {"pkg",FT_PKG},{"iso",FT_DISC},{"bin",FT_DISC},{"img",FT_DISC},{"cue",FT_DISC},{"mdf",FT_DISC},{"vob",FT_VIDEO},
+        {"pkg",FT_PKG},{"p3t",FT_THEME},{"iso",FT_DISC},{"bin",FT_DISC},{"img",FT_DISC},{"cue",FT_DISC},{"mdf",FT_DISC},{"vob",FT_VIDEO},
         {"png",FT_IMAGE},{"jpg",FT_IMAGE},{"jpeg",FT_IMAGE},{"bmp",FT_IMAGE},{"gif",FT_IMAGE},{"gtf",FT_IMAGE},{"dds",FT_IMAGE},
         {"mp4",FT_VIDEO},{"mkv",FT_VIDEO},{"avi",FT_VIDEO},{"m2ts",FT_VIDEO},{"mts",FT_VIDEO},{"pam",FT_VIDEO},{"wmv",FT_VIDEO},
         {"mp3",FT_AUDIO},{"ogg",FT_AUDIO},{"wav",FT_AUDIO},{"flac",FT_AUDIO},{"at3",FT_AUDIO},{"aac",FT_AUDIO},{"m4a",FT_AUDIO},
@@ -229,6 +230,7 @@ static void type_colors(int t, uint32_t *a, uint32_t *b)
         case FT_ARCHIVE: *a = RGBA8(255, 170, 70, 255);  *b = RGBA8(220, 110, 40, 255); break;
         case FT_SYSTEM:  *a = RGBA8(60, 210, 240, 255);  *b = RGBA8(30, 140, 200, 255); break;
         case FT_TEXT:    *a = RGBA8(190, 196, 220, 255); *b = RGBA8(130, 136, 170, 255); break;
+        case FT_THEME:   *a = RGBA8(255, 110, 180, 255); *b = RGBA8(150, 70, 255, 255); break;
         default:         *a = RGBA8(150, 156, 190, 255); *b = RGBA8(100, 106, 140, 255); break;
     }
 }
@@ -354,7 +356,14 @@ static void loader_thread(void *arg)
         ld.tex = NULL;
         ld.cover_st = CV_NONE;
         memset(&ld.info, 0, sizeof(ld.info));
-        if (ld.is_img == 2) {
+        if (ld.is_img == 3) {
+            uint8_t *b = NULL; uint32_t sz = 0;
+            if (p3t_preview(ld.path, &b, &sz)) {
+                texture_t t = (b[0] == 0x89) ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
+                ld.tex = gfx_make_thumb(t, 128, 72);
+                free(b);
+            }
+        } else if (ld.is_img == 2) {
             char cp[1400];
             ld.cover_st = covers_lookup(ld.path, ld.name, ld.is_dir, cp, sizeof(cp));
             if (ld.cover_st == CV_CACHED) {
@@ -443,10 +452,11 @@ static void lazy_parse(void)
                 entry_t *e = &ents[i];
                 if (e->parsed) continue;
                 int img = e->type == FT_IMAGE && thumbable(e->name);
-                int cov = !img && e->type != FT_PKG && cfg.covers && covers_candidate(e->name, e->is_dir);
-                if (e->type != FT_PKG && !img && !cov) continue;
+                int thm = e->type == FT_THEME;
+                int cov = !img && !thm && e->type != FT_PKG && cfg.covers && covers_candidate(e->name, e->is_dir);
+                if (e->type != FT_PKG && !img && !cov && !thm) continue;
                 e->parsed = 2;   /* pending */
-                ld.gen = dir_gen; ld.idx = i; ld.is_img = cov ? 2 : img; ld.is_dir = e->is_dir; ld.size = e->size;
+                ld.gen = dir_gen; ld.idx = i; ld.is_img = thm ? 3 : cov ? 2 : img; ld.is_dir = e->is_dir; ld.size = e->size;
                 snprintf(ld.name, sizeof(ld.name), "%s", e->name);
                 path_join(ld.path, sizeof(ld.path), cwd, e->name);
                 ld_state = 1;
@@ -468,7 +478,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -480,6 +490,7 @@ static sfo_field_t sfo_fields[SFO_MAX_FIELDS];
 static int sfo_count, sfo_sel;
 static char sfo_path[1400];
 static char ops_output[1400];
+static int thm_installing;
 static int launch_sys;
 static char launch_core[1400], launch_core_name[64], launch_src[1400];
 static char pending_self[1400], pending_arg[1400];
@@ -873,8 +884,8 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_WEBMAN, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
 
 static int cur_writable(void) { return vol_count && vols[vol_sel].writable; }
@@ -911,6 +922,7 @@ static int menu_enabled(int m)
         case M_INSTALL: return count_targets(1, NULL) > 0;
         case M_EXTRACT: return has && !marked_count() && ents[sel].type == FT_PKG;
         case M_WEBMAN: return has && !marked_count();
+        case M_THEME: return strcmp(cwd, THEME_DIR) != 0;
         case M_BUILD: return cursor_is_pkg_folder();
         case M_EDITSFO: { char t[1400]; return cursor_sfo(t, sizeof(t)); }
         case M_EXTRACT_ARC: return has && !marked_count() && archive_kind(ents[sel].name) != ARC_NONE && cur_writable();
@@ -932,6 +944,7 @@ static void build_menu(void)
         if (m == M_OPEN && !(ent_count && ents[sel].is_dir)) continue;
         if (m == M_INSTALL && !count_targets(1, NULL)) continue;
         if (m == M_EXTRACT && !(ent_count && ents[sel].type == FT_PKG && !marked_count())) continue;
+        if (m == M_THEME) { int any = 0, mk = marked_count(); for (int i = 0; i < ent_count; i++) if (ents[i].type == FT_THEME && (mk ? ents[i].marked : i == sel)) any = 1; if (!any) continue; }
         if (m == M_WEBMAN) { if (!ent_count) continue; char fp[1400]; path_join(fp, sizeof(fp), cwd, ents[sel].name); if (!webman_is_game(ents[sel].name, ents[sel].is_dir, fp)) continue; }
         if (m == M_BUILD && !cursor_is_pkg_folder()) continue;
         if (m == M_EDITSFO) { char t[1400]; if (!cursor_sfo(t, sizeof(t))) continue; }
@@ -1091,7 +1104,9 @@ static void draw_result_ops(void)
         gfx_text(cx, y + 100, T(S_OPS_DONE), 20, 1, C_TEXT, ALIGN_CENTER);
         char nfo[64]; snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
         gfx_text(cx, y + 130, nfo, 12, 0, C_DIM, ALIGN_CENTER);
-        if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE) {
+        if (thm_installing && s->op == OP_COPY) {
+            draw_lines(cx, y + 150, T(S_THEME_APPLY), 11, 0, C_DIM, ALIGN_CENTER, 16);
+        } else if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE) {
             char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), ops_output);
             gfx_text_fit(cx, y + 150, w - 50, o, 11, 0, C_DIM, ALIGN_CENTER);
         }
@@ -1601,6 +1616,71 @@ static void handle_hex(void)
     if ((in_pressed & B_CANCEL) && confirm_discard(hex_edits > 0)) { ui = UI_BROWSE; refresh_keep_wrapper(); }
 }
 
+/* ---------- theme viewer ---------- */
+static texture_t thm_tex;
+static char thm_path[1400], thm_name[256];
+
+static int theme_installed(const char *name)
+{
+    char p[1400];
+    snprintf(p, sizeof(p), "%s/%s", THEME_DIR, name);
+    return vfs_exists(p);
+}
+
+static void theme_open(int idx)
+{
+    if (thm_tex) { gfx_free_texture(thm_tex); thm_tex = NULL; }
+    path_join(thm_path, sizeof(thm_path), cwd, ents[idx].name);
+    snprintf(thm_name, sizeof(thm_name), "%s", ents[idx].name);
+    uint8_t *b = NULL; uint32_t sz = 0;
+    if (p3t_preview(thm_path, &b, &sz)) {
+        texture_t t = (b[0] == 0x89) ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
+        thm_tex = gfx_make_thumb(t, 1280, 720);
+        free(b);
+    }
+    ui = UI_THEME;
+}
+
+static void theme_install_paths(char srcs[][1024], int n)
+{
+    vfs_mkdir(THEME_DIR);
+    thm_installing = 1;
+    snprintf(ops_output, sizeof(ops_output), "%s", THEME_DIR);
+    if (ops_start(OP_COPY, srcs, n, THEME_DIR)) open_modal(UI_PROGRESS_OPS);
+}
+
+static void draw_theme(void)
+{
+    gfx_rect(0, 0, SCR_W, SCR_H, RGBA8(0, 0, 0, 255));
+    if (thm_tex) {
+        int iw, ih;
+        gfx_texture_size(thm_tex, &iw, &ih);
+        float sc = (float)SCR_W / iw;
+        if ((float)SCR_H / ih > sc) sc = (float)SCR_H / ih;
+        gfx_texture(thm_tex, (SCR_W - iw * sc) / 2, (SCR_H - ih * sc) / 2, iw * sc, ih * sc, RGBA8(255, 255, 255, 255));
+    } else gfx_text(SCR_W / 2, SCR_H / 2 - 10, T(S_THEME_NO_PREVIEW), 15, 1, C_TEXT, ALIGN_CENTER);
+    gfx_grad_v(0, 0, SCR_W, 70, RGBA8(0, 0, 0, 190), RGBA8(0, 0, 0, 0));
+    gfx_text(MXP(28), 14, T(S_THEME), 11, 1, C_DIM, MA(ALIGN_LEFT));
+    gfx_text_fit(MXP(28), 30, SCR_W - 200, thm_name, 16, 1, C_TEXT, MA(ALIGN_LEFT));
+    if (theme_installed(thm_name)) {
+        float w = gfx_text_width(T(S_THEME_INSTALLED), 11, 1) + 24;
+        L_rrect(SCR_W - 28 - w, 22, w, 24, 12, C_OKC);
+        L_text(SCR_W - 28 - w / 2, 27, T(S_THEME_INSTALLED), 11, 1, C_TEXT, ALIGN_CENTER);
+    }
+}
+
+static void handle_theme(void)
+{
+    if (in_pressed & B_CANCEL) { if (thm_tex) { gfx_free_texture(thm_tex); thm_tex = NULL; } ui = UI_BROWSE; return; }
+    if ((in_pressed & B_OK) && !theme_installed(thm_name)) {
+        static char one[1][1024];
+        snprintf(one[0], sizeof(one[0]), "%s", thm_path);
+        if (thm_tex) { gfx_free_texture(thm_tex); thm_tex = NULL; }
+        ui = UI_BROWSE;
+        theme_install_paths(one, 1);
+    }
+}
+
 static void open_props(void)
 {
     if (ent_count && ents[sel].is_dir) { char p[1400]; path_join(p, sizeof(p), cwd, ents[sel].name); dirsize_start(p); }
@@ -1665,6 +1745,7 @@ static void open_entry(int idx)
     entry_t *e = &ents[idx];
     char p[1400];
     path_join(p, sizeof(p), cwd, e->name);
+    if (e->type == FT_THEME) { theme_open(idx); return; }
     if (is_image(e)) { image_load(idx); ui = UI_IMAGE; return; }
     if (audio_is_supported(e->name)) { audio_open(idx); ui = UI_AUDIO; modal_anim = 0.6f; return; }
     if (e->type == FT_VIDEO) { show_toast(T(S_VIDEO_NO)); return; }
@@ -1731,6 +1812,15 @@ static void run_menu_action(int m)
     case M_OPEN: { char p[1400]; path_join(p, sizeof(p), cwd, ents[sel].name); open_dir(p, NULL); break; }
     case M_INSTALL: confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); break;
     case M_WEBMAN: ask_launch(sel); break;
+    case M_THEME: {
+        static char srcs[OPS_MAX_SRC][1024];
+        int n = 0, mk = marked_count();
+        for (int i = 0; i < ent_count && n < OPS_MAX_SRC; i++)
+            if (ents[i].type == FT_THEME && (mk ? ents[i].marked : i == sel)) path_join(srcs[n++], 1024, cwd, ents[i].name);
+        for (int i = 0; i < ent_count; i++) ents[i].marked = 0;
+        if (n) theme_install_paths(srcs, n);
+        break;
+    }
     case M_EXTRACT: {
         char src[1400];
         path_join(src, sizeof(src), cwd, ents[sel].name);
@@ -2015,6 +2105,7 @@ int main(void)
             if (in_pressed & (B_OK | B_CANCEL)) {
                 const ops_status_t *s = ops_status();
                 if (s->op == OP_MOVE && s->state == OPS_DONE) clip_n = 0;
+                thm_installing = 0;
                 ops_reset();
                 for (int i = 0; i < ent_count; i++) ents[i].marked = 0;
                 refresh_keep();
@@ -2023,6 +2114,7 @@ int main(void)
             break;
         case UI_PROPS: if (in_pressed & (B_OK | B_CANCEL)) ui = UI_BROWSE; break;
         case UI_IMAGE: handle_image(); break;
+        case UI_THEME: handle_theme(); break;
         case UI_CONFIRM_LAUNCH: {
             uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
             if (in_pressed & (L | R)) confirm_sel = !confirm_sel;
@@ -2061,7 +2153,7 @@ int main(void)
             hint_t h[7]; int n = 0;
             if (focus_list && ent_count) {
                 entry_t *e = &ents[sel];
-                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
+                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : e->type == FT_THEME ? S_VIEW : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
                           audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC :
                           launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY :
                           !strcasecmp(ext_of(e->name), "iso") ? S_PLAY : S_PROPS;
@@ -2082,6 +2174,12 @@ int main(void)
             draw_hex();
             hint_t h[5] = { { ok_icon, S_EDIT_BYTE }, { BTN_L1, S_JUMP }, { BTN_START, S_SAVE }, { cancel_icon, S_BACK } };
             draw_hints(h, 4);
+        } else if (ui == UI_THEME) {
+            draw_theme();
+            hint_t h[2]; int n = 0;
+            if (!theme_installed(thm_name)) h[n++] = (hint_t){ ok_icon, S_THEME_INSTALL };
+            h[n++] = (hint_t){ cancel_icon, S_BACK };
+            draw_hints(h, n);
         } else if (ui == UI_IMAGE) {
             draw_image();
             hint_t h[4] = { { BTN_L1, S_PREV }, { BTN_R1, S_NEXT }, { BTN_SQUARE, S_FIT }, { cancel_icon, S_BACK } };
