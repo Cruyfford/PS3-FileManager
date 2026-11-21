@@ -58,6 +58,7 @@ static uint32_t vh;
 static void *vmem;
 static uint8_t *au_buf[AU_SLOTS];
 static volatile uint32_t au_sent, au_done, pics_ready;
+static volatile int seq_done;
 static int need_headers;
 static uint8_t sps_pps[1024]; static int sps_pps_len;
 
@@ -128,6 +129,7 @@ static u32 vdec_cb(u32 handle, u32 msg, u32 data, u32 arg)
     (void)handle; (void)data; (void)arg;
     if (msg == VDEC_CALLBACK_AUDONE) au_done++;
     else if (msg == VDEC_CALLBACK_PICOUT) pics_ready++;
+    else if (msg == VDEC_CALLBACK_SEQDONE) seq_done = 1;
     return 0;
 }
 
@@ -238,6 +240,23 @@ static int submit_au(const uint8_t *data, int n, double pts)
     while ((r = vdecDecodeAu(vh, VDEC_DECODER_MODE_NORMAL, &au)) == (s32)VDEC_ERROR_BUSY && !stop_demux) usleep(2000);
     if (r == 0) au_sent++;
     return r == 0;
+}
+
+/* end the decoding sequence: release every pending picture and wait (bounded) for SEQDONE */
+static void vdec_end_and_drain(void)
+{
+    if (!vh) return;
+    seq_done = 0;
+    vdecEndSequence(vh);
+    vdecPictureFormat f = { VDEC_PICFMT_YUV420P, VDEC_COLOR_MATRIX_BT709, 0 };
+    for (int i = 0; i < 400 && !seq_done; i++) {          /* up to ~2 s */
+        u32 a;
+        while (vdecGetPicItem(vh, &a) == 0 && a) { if (frame) vdecGetPicture(vh, &f, frame); else break; }
+        usleep(5000);
+    }
+    u32 a;
+    while (vdecGetPicItem(vh, &a) == 0 && a && frame) vdecGetPicture(vh, &f, frame);
+    pics_ready = 0;
 }
 
 /* ======================= ES splitter ======================= */
@@ -573,9 +592,16 @@ static void free_textures(void)
 void video_close(void)
 {
     stop_threads();
-    if (vh) { vdecEndSequence(vh); usleep(20000); vdecClose(vh); vh = 0; }
-    free(vmem); vmem = NULL;
-    for (int i = 0; i < AU_SLOTS; i++) { free(au_buf[i]); au_buf[i] = NULL; }
+    int leak = 0;
+    if (vh) {
+        vdec_end_and_drain();
+        /* closing a decoder that never finished its sequence hangs the console: leave it and keep its memory */
+        if (seq_done) vdecClose(vh); else leak = 1;
+        vh = 0;
+    }
+    if (!leak) { free(vmem); for (int i = 0; i < AU_SLOTS; i++) free(au_buf[i]); }
+    vmem = NULL;
+    for (int i = 0; i < AU_SLOTS; i++) au_buf[i] = NULL;
     if (ad) { adec_close(ad); ad = NULL; }
     if (dmx) { demux_close(dmx); dmx = NULL; }
     vs = NULL; vsi = asi = -1;
@@ -599,13 +625,7 @@ static void restart_at(double target)
     if (target < 0) target = 0;
     if (duration > 1 && target > duration - 1) target = duration - 1;
     stop_threads();
-    vdecEndSequence(vh);
-    for (int i = 0; i < 200 && pics_ready; i++) {
-        u32 a;
-        if (vdecGetPicItem(vh, &a) == 0) { vdecPictureFormat f = { VDEC_PICFMT_YUV420P, VDEC_COLOR_MATRIX_BT709, 0 }; vdecGetPicture(vh, &f, frame); }
-        pics_ready--;
-        usleep(500);
-    }
+    vdec_end_and_drain();
     vdecStartSequence(vh);
     dmx->seek(dmx, target);
     if (ad) adec_reset(ad);
