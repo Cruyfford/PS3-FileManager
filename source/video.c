@@ -88,6 +88,7 @@ static int es_seen_pic, es_seen_slice;
 static ptsmark_t es_pts[64]; static int es_npts;
 
 static uint32_t ring_used(void);
+static volatile uint32_t vq_w, vq_r;
 static uint64_t now_us(void) { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ULL + ns / 1000; }
 
 int video_supported(const char *n)
@@ -109,8 +110,8 @@ const char *video_format_info(void) { return fmt_info; }
 const char *video_debug_info(void)
 {
     static char b[160];
-    snprintf(b, sizeof(b), "au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
-             (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
+    snprintf(b, sizeof(b), "q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
+             (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
              asi >= 0 && !audio_port_ok ? " (port off)" : "", (unsigned)(ring ? ring_used() : 0), frame_w, frame_h, demux_done);
     return b;
 }
@@ -216,41 +217,83 @@ static int au_is_key(int codec, const uint8_t *b, int n, int nal_len)
     return 1;
 }
 
+/* Video AUs go through a queue to a separate submit thread: the decoder can hold back (BUSY) until
+ * pictures are taken, and that must never stop the demuxer from feeding audio (which drives the clock). */
+#define VQ 256
+#define VQ_BYTES (24 * 1024 * 1024)
+typedef struct { uint8_t *d; int n; double pts; } vq_t;
+static vq_t vq[VQ];
+static volatile size_t vq_bytes;
+static volatile int video_done;
+static sys_ppu_thread_t th_video; static int th_video_on;
+
 static int submit_au(const uint8_t *data, int n, double pts)
 {
-    while (!stop_demux && (au_sent - au_done >= AU_SLOTS - 1 || pics_ready > 6)) usleep(2000);
-    if (stop_demux) return 0;
-    uint8_t *slot = au_buf[au_sent % AU_SLOTS];
+    while (!stop_demux && (vq_w - vq_r >= VQ - 1 || vq_bytes > VQ_BYTES)) usleep(2000);
+    if (stop_demux || n <= 0) return 0;
+    int cap = n + sps_pps_len + vs->extra_len + 64;
+    if (vs->codec == VC_H264 && vs->nal_len && vs->nal_len < 4) cap += n * 2;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (!buf) return 0;
     int o = 0;
     if (vs->codec == VC_H264 && vs->nal_len) {
         int idr = au_is_key(VC_H264, data, n, vs->nal_len);
-        if ((idr || need_headers) && sps_pps_len) { memcpy(slot, sps_pps, sps_pps_len); o = sps_pps_len; }
+        if ((idr || need_headers) && sps_pps_len) { memcpy(buf, sps_pps, sps_pps_len); o = sps_pps_len; }
         for (int i = 0; i + vs->nal_len <= n;) {
             uint32_t l = 0;
             for (int b = 0; b < vs->nal_len; b++) l = (l << 8) | data[i + b];
             i += vs->nal_len;
-            if (i + (int)l > n || o + 4 + (int)l > AU_MAX) break;
-            memcpy(slot + o, "\0\0\0\1", 4); o += 4;
-            memcpy(slot + o, data + i, l); o += l;
+            if (i + (int)l > n || o + 4 + (int)l > cap) break;
+            memcpy(buf + o, "\0\0\0\1", 4); o += 4;
+            memcpy(buf + o, data + i, l); o += l;
             i += l;
         }
     } else {
-        if (need_headers && vs->extra_len && vs->codec != VC_H264 && vs->extra_len < 4096) { memcpy(slot, vs->extra, vs->extra_len); o = vs->extra_len; }
-        if (o + n > AU_MAX) n = AU_MAX - o;
-        memcpy(slot + o, data, n); o += n;
+        if (need_headers && vs->extra_len && vs->codec != VC_H264 && vs->extra_len < 4096) { memcpy(buf, vs->extra, vs->extra_len); o = vs->extra_len; }
+        memcpy(buf + o, data, n); o += n;
     }
     need_headers = 0;
-    if (o <= 0) return 0;
-    vdecAU au;
-    memset(&au, 0, sizeof(au));
-    au.packet_addr = (u32)(u64)slot; au.packet_size = o;
-    if (pts >= 0 && !dmx->frame_count_ts) { uint64_t p90 = (uint64_t)(pts * 90000.0); au.pts.low = (u32)p90; au.pts.hi = (u32)(p90 >> 32); }
-    else { au.pts.low = VDEC_TS_INVALID; au.pts.hi = VDEC_TS_INVALID; }
-    au.dts.low = VDEC_TS_INVALID; au.dts.hi = VDEC_TS_INVALID;
-    s32 r;
-    while ((r = vdecDecodeAu(vh, VDEC_DECODER_MODE_NORMAL, &au)) == (s32)VDEC_ERROR_BUSY && !stop_demux) usleep(2000);
-    if (r == 0) au_sent++;
-    return r == 0;
+    if (o <= 0 || o > AU_MAX) { free(buf); return 0; }
+    vq_t *e = &vq[vq_w % VQ];
+    e->d = buf; e->n = o; e->pts = pts;
+    vq_bytes += o;
+    __sync_synchronize();
+    vq_w++;
+    return 1;
+}
+
+static void video_thread(void *arg)
+{
+    (void)arg;
+    while (!stop_demux) {
+        if (vq_r == vq_w) { if (demux_done) break; usleep(2000); continue; }
+        while (!stop_demux && (au_sent - au_done >= AU_SLOTS - 1 || pics_ready > 6)) usleep(2000);
+        if (stop_demux) break;
+        vq_t *e = &vq[vq_r % VQ];
+        uint8_t *slot = au_buf[au_sent % AU_SLOTS];
+        memcpy(slot, e->d, e->n);
+        vdecAU au;
+        memset(&au, 0, sizeof(au));
+        au.packet_addr = (u32)(u64)slot; au.packet_size = e->n;
+        if (e->pts >= 0 && !dmx->frame_count_ts) { uint64_t p90 = (uint64_t)(e->pts * 90000.0); au.pts.low = (u32)p90; au.pts.hi = (u32)(p90 >> 32); }
+        else { au.pts.low = VDEC_TS_INVALID; au.pts.hi = VDEC_TS_INVALID; }
+        au.dts.low = VDEC_TS_INVALID; au.dts.hi = VDEC_TS_INVALID;
+        s32 r;
+        while ((r = vdecDecodeAu(vh, VDEC_DECODER_MODE_NORMAL, &au)) == (s32)VDEC_ERROR_BUSY && !stop_demux) usleep(2000);
+        if (r == (s32)VDEC_ERROR_BUSY) break;          /* stopping: keep the entry, it's freed by vq_clear */
+        if (r == 0) au_sent++;
+        vq_bytes -= e->n;
+        free(e->d); e->d = NULL;
+        vq_r++;
+    }
+    video_done = 1;
+    sysThreadExit(0);
+}
+
+static void vq_clear(void)
+{
+    while (vq_r != vq_w) { vq_t *e = &vq[vq_r % VQ]; free(e->d); e->d = NULL; vq_r++; }
+    vq_r = vq_w = 0; vq_bytes = 0;
 }
 
 /* end the decoding sequence: release every pending picture and wait (bounded) for SEQDONE */
@@ -451,8 +494,9 @@ static void demux_thread(void *arg)
 
 static void start_threads(void)
 {
-    stop_demux = 0; demux_done = 0;
+    stop_demux = 0; demux_done = 0; video_done = 0;
     if (sysThreadCreate(&th_demux, demux_thread, NULL, 1100, 0x40000, THREAD_JOINABLE, "vdemux") == 0) th_demux_on = 1;
+    if (sysThreadCreate(&th_video, video_thread, NULL, 1050, 0x8000, THREAD_JOINABLE, "vsubmit") == 0) th_video_on = 1;
     if (asi >= 0 && sysThreadCreate(&th_audio, audio_thread, NULL, 900, 0x10000, THREAD_JOINABLE, "vaudio") == 0) th_audio_on = 1;
 }
 
@@ -462,6 +506,8 @@ static void stop_threads(void)
     u64 rv;
     if (th_demux_on) { sysThreadJoin(th_demux, &rv); th_demux_on = 0; }
     if (th_audio_on) { sysThreadJoin(th_audio, &rv); th_audio_on = 0; }
+    if (th_video_on) { sysThreadJoin(th_video, &rv); th_video_on = 0; }
+    vq_clear();
 }
 
 static void reset_pipeline_state(void)
@@ -742,7 +788,7 @@ static void fetch_pictures(void)
         cur_tex = b; frame_w = w; frame_h = h;
         break;
     }
-    if (demux_done && pics_ready == 0 && au_sent == au_done && (asi >= 0 && audio_started ? ring_used() < AUDIO_BLOCK_SAMPLES : 1)) st = VID_ENDED;
+    if (demux_done && video_done && pics_ready == 0 && au_sent == au_done && (asi >= 0 && audio_started ? ring_used() < AUDIO_BLOCK_SAMPLES : 1)) st = VID_ENDED;
 }
 
 void video_render(float x, float y, float w, float h)
