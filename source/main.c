@@ -32,6 +32,7 @@
 #include "covers.h"
 #include "theme.h"
 #define SYS_WEBMAN 100
+#define SYS_MOVIAN 101
 
 #define APP_DIR   "/dev_hdd0/game/CRPK00001/USRDIR"
 #define CFG_FILE  APP_DIR "/settings.cfg"
@@ -490,7 +491,8 @@ static sfo_field_t sfo_fields[SFO_MAX_FIELDS];
 static int sfo_count, sfo_sel;
 static char sfo_path[1400];
 static char ops_output[1400];
-static int thm_installing;
+static int thm_installing, play_after_copy;
+static char movian_self[1400];
 static int launch_sys;
 static char launch_core[1400], launch_core_name[64], launch_src[1400];
 static char pending_self[1400], pending_arg[1400];
@@ -1687,13 +1689,30 @@ static void open_props(void)
     open_modal(UI_PROPS);
 }
 
+static int find_movian(void)
+{
+    static const char *ids[] = { "HTSS00003", "MOVIAN000" };
+    static const char *bins[] = { "movian.self", "showtime.self", "EBOOT.BIN" };
+    for (unsigned i = 0; i < 2; i++)
+        for (unsigned b = 0; b < 3; b++) {
+            snprintf(movian_self, sizeof(movian_self), "/dev_hdd0/game/%s/USRDIR/%s", ids[i], bins[b]);
+            if (vfs_exists(movian_self)) return 1;
+        }
+    movian_self[0] = 0;
+    return 0;
+}
+
 static void ask_launch(int idx)
 {
     entry_t *e = &ents[idx];
     launch_sys = launch_kind(e->name);
     path_join(launch_src, sizeof(launch_src), cwd, e->name);
     if (webman_is_game(e->name, e->is_dir, launch_src)) launch_sys = SYS_WEBMAN;
-    if (launch_sys != SYS_SELF && launch_sys != SYS_WEBMAN) {
+    if (e->type == FT_VIDEO) {
+        if (!find_movian()) { show_toast(T(S_NO_MOVIAN)); return; }
+        launch_sys = SYS_MOVIAN;
+    }
+    if (launch_sys != SYS_SELF && launch_sys != SYS_WEBMAN && launch_sys != SYS_MOVIAN) {
         char m[128];
         if (!launch_retroarch_installed()) { snprintf(m, sizeof(m), T(S_NO_RA), launch_system_name(launch_sys)); show_toast(m); return; }
         if (!launch_find_core(launch_sys, launch_core, sizeof(launch_core), launch_core_name, sizeof(launch_core_name))) {
@@ -1710,10 +1729,13 @@ static void draw_confirm_launch(void)
     draw_modal_frame(w, h, &x, &y);
     const char *bn = strrchr(launch_src, '/');
     bn = bn ? bn + 1 : launch_src;
-    gfx_text(SCR_W / 2, y + 22, launch_sys == SYS_SELF ? T(S_LAUNCH_Q) : launch_sys == SYS_WEBMAN ? T(S_WM_Q) : T(S_PLAY_GAME), 20, 1, C_TEXT, ALIGN_CENTER);
-    draw_file_icon(MXP(SCR_W / 2) - (RTL() ? -28 : 28), y + 60, 56, launch_sys == SYS_SELF ? FT_SYSTEM : FT_DISC, bn);
+    gfx_text(SCR_W / 2, y + 22, launch_sys == SYS_SELF ? T(S_LAUNCH_Q) : launch_sys == SYS_WEBMAN ? T(S_WM_Q) :
+             launch_sys == SYS_MOVIAN ? T(S_MOVIAN_Q) : T(S_PLAY_GAME), 20, 1, C_TEXT, ALIGN_CENTER);
+    draw_file_icon(MXP(SCR_W / 2) - (RTL() ? -28 : 28), y + 60, 56, launch_sys == SYS_SELF ? FT_SYSTEM : launch_sys == SYS_MOVIAN ? FT_VIDEO : FT_DISC, bn);
     gfx_text_fit(SCR_W / 2, y + 126, w - 60, bn, 14, 1, C_TEXT, ALIGN_CENTER);
-    if (launch_sys == SYS_WEBMAN) {
+    if (launch_sys == SYS_MOVIAN) {
+        if (vfs_backend(launch_src) != VFS_NATIVE) gfx_text_fit(SCR_W / 2, y + 150, w - 40, T(S_MOVIAN_COPY), 11, 0, RGBA8(255, 200, 120, 255), ALIGN_CENTER);
+    } else if (launch_sys == SYS_WEBMAN) {
         gfx_text_fit(SCR_W / 2, y + 150, w - 60, T(S_WM_HINT), 11, 0, C_DIM, ALIGN_CENTER);
     } else if (launch_sys != SYS_SELF) {
         char m[160]; snprintf(m, sizeof(m), T(S_PLAY_WITH), launch_core_name);
@@ -1725,6 +1747,23 @@ static void draw_confirm_launch(void)
 static void do_launch(void)
 {
     char native[1400];
+    if (launch_sys == SYS_MOVIAN) {
+        ui = UI_BROWSE;
+        if (vfs_backend(launch_src) == VFS_NATIVE) {
+            snprintf(pending_self, sizeof(pending_self), "%s", movian_self);
+            snprintf(pending_arg, sizeof(pending_arg), "file://%s", launch_src);
+            quit_req = 1;
+            return;
+        }
+        /* copy to the HDD with progress, then play */
+        static char one[1][1024];
+        snprintf(one[0], sizeof(one[0]), "%s", launch_src);
+        vfs_mkdir("/dev_hdd0/tmp");
+        vfs_mkdir("/dev_hdd0/tmp/fm_video");
+        play_after_copy = 1;
+        if (ops_start(OP_COPY, one, 1, "/dev_hdd0/tmp/fm_video")) open_modal(UI_PROGRESS_OPS); else play_after_copy = 0;
+        return;
+    }
     if (launch_sys == SYS_WEBMAN) {
         ui = UI_BROWSE;
         int r = webman_resolve(launch_src, native, sizeof(native));
@@ -1933,7 +1972,7 @@ static void handle_browse(void)
         else if (e->type == FT_PKG) { confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); }
         else if (!strcasecmp(e->name, "PARAM.SFO")) run_menu_action(M_EDITSFO);
         else if (archive_kind(e->name) != ARC_NONE && cur_writable()) run_menu_action(M_EXTRACT_ARC);
-        else if (launch_kind(e->name) != SYS_NONE) ask_launch(sel);
+        else if (launch_kind(e->name) != SYS_NONE || e->type == FT_VIDEO) ask_launch(sel);
         else if (!e->is_dir) { char fp[1400]; path_join(fp, sizeof(fp), cwd, e->name); if (webman_is_game(e->name, 0, fp)) ask_launch(sel); else open_entry(sel); }
         else open_entry(sel);
     }
@@ -2086,7 +2125,16 @@ int main(void)
             break;
         case UI_PROGRESS_OPS:
             if (in_pressed & B_CANCEL) ops_cancel();
-            if (ops_status()->state != OPS_RUNNING) open_modal(UI_RESULT_OPS);
+            if (ops_status()->state != OPS_RUNNING) {
+                if (play_after_copy && ops_status()->state == OPS_DONE) {
+                    const char *bn = strrchr(launch_src, '/');
+                    snprintf(pending_self, sizeof(pending_self), "%s", movian_self);
+                    snprintf(pending_arg, sizeof(pending_arg), "file:///dev_hdd0/tmp/fm_video/%s", bn ? bn + 1 : launch_src);
+                    ops_reset();
+                    play_after_copy = 0;
+                    quit_req = 1;
+                } else open_modal(UI_RESULT_OPS);
+            }
             break;
         case UI_RESULT_INSTALL: {
             const inst_status_t *s = inst_status();
@@ -2106,6 +2154,13 @@ int main(void)
                 const ops_status_t *s = ops_status();
                 if (s->op == OP_MOVE && s->state == OPS_DONE) clip_n = 0;
                 thm_installing = 0;
+                if (play_after_copy && s->state == OPS_DONE) {
+                    const char *bn = strrchr(launch_src, '/');
+                    snprintf(pending_self, sizeof(pending_self), "%s", movian_self);
+                    snprintf(pending_arg, sizeof(pending_arg), "file:///dev_hdd0/tmp/fm_video/%s", bn ? bn + 1 : launch_src);
+                    quit_req = 1;
+                }
+                play_after_copy = 0;
                 ops_reset();
                 for (int i = 0; i < ent_count; i++) ents[i].marked = 0;
                 refresh_keep();
@@ -2153,7 +2208,7 @@ int main(void)
             hint_t h[7]; int n = 0;
             if (focus_list && ent_count) {
                 entry_t *e = &ents[sel];
-                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : e->type == FT_THEME ? S_VIEW : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
+                int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : e->type == FT_THEME ? S_VIEW : e->type == FT_VIDEO ? S_PLAY_MOVIAN : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
                           audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC :
                           launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY :
                           !strcasecmp(ext_of(e->name), "iso") ? S_PLAY : S_PROPS;

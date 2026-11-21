@@ -171,6 +171,10 @@ static const char *en[S_COUNT] = {
     [S_THEME_APPLY] = "Apply it: Settings > Theme Settings > Theme (restart if it isn't listed)",
     [S_THEME_NO_PREVIEW] = "No preview image in this theme",
     [S_THEME] = "Theme",
+    [S_MOVIAN_Q] = "Play in Movian?",
+    [S_MOVIAN_COPY] = "Movian can't read exFAT/NTFS: the video is copied to the HDD first",
+    [S_NO_MOVIAN] = "Install Movian to play videos",
+    [S_PLAY_MOVIAN] = "Play in Movian",
 };
 
 static const char *ar[S_COUNT] = {
@@ -342,6 +346,10 @@ static const char *ar[S_COUNT] = {
     [S_THEME_APPLY] = "طبّقه من: الإعدادات > إعدادات الثيم > الثيم (أعد التشغيل إن لم يظهر)",
     [S_THEME_NO_PREVIEW] = "لا توجد صورة معاينة في هذا الثيم",
     [S_THEME] = "ثيم",
+    [S_MOVIAN_Q] = "تشغيل في Movian؟",
+    [S_MOVIAN_COPY] = "Movian لا يقرأ exFAT/NTFS: سيُنسخ الفيديو إلى الهارد أولاً",
+    [S_NO_MOVIAN] = "ثبّت Movian لتشغيل الفيديو",
+    [S_PLAY_MOVIAN] = "تشغيل في Movian",
 };
 
 const char *T(int id)
