@@ -110,7 +110,7 @@ int vfs_scan(volume_t *out, int max)
     for (int port = 0; port < 8 && slot < FF_SLOTS; port++) {
         if (native_usb[port]) continue;
         if (fflib_attach(slot, USB_MASS_STORAGE(port), 1) != FR_OK) { fflib_detach(slot); continue; }
-        char drn[8]; snprintf(drn, sizeof(drn), "%d:/", slot);
+        char drn[16]; snprintf(drn, sizeof(drn), "%d:/", slot);
         FATFS *fs = (FATFS *)calloc(1, sizeof(FATFS));
         if (!fs) { fflib_detach(slot); continue; }
         if (f_mount(fs, drn, 1) != FR_OK) { free(fs); fflib_detach(slot); continue; }

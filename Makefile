@@ -23,7 +23,7 @@ INCLUDES	:=	include
 PKGFILES	:=	$(CURDIR)/pkgfiles
 
 LIBS		:=	$(PROJECT_ROOT)/third_party/fs/lib/libntfs_ext.a $(PROJECT_ROOT)/third_party/fs/lib/libfatfs.a \
-				-lya2d -ltiny3d -lfreetype -lz -lpolarssl -lsimdmath -lgcm_sys -lio -lsysutil -lrt -llv2 \
+				-lya2d -lfont3d -ltiny3d -lfreetype -lz -lpolarssl -lsimdmath -lgcm_sys -lio -lsysutil -lrt -llv2 \
 				-lpngdec -ljpgdec -lsysmodule -lsysfs -lm
 
 CFLAGS		=	-O2 -Wall -mcpu=cell -std=gnu99 $(MACHDEP) $(INCLUDE)
