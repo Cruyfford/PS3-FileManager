@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-enum { S_NONE, S_NES, S_SNES, S_GB, S_GBA, S_MD, S_PS1, S_PS2, S_PS3, S_DISC /* not yet known */ };
+enum { S_NONE, S_NES, S_SNES, S_GB, S_GBA, S_MD, S_PS1, S_PS2, S_PS3, S_DISC /* not yet known */, S_VIDEO };
 
 static char cache_dir[512];
 static volatile int enabled = 1, gen, quit;
@@ -42,6 +42,8 @@ static int rom_sys(const char *name)
     if (!strcasecmp(e, "gba")) return S_GBA;
     if (!strcasecmp(e, "md") || !strcasecmp(e, "gen") || !strcasecmp(e, "smd")) return S_MD;
     if (!strcasecmp(e, "iso") || !strcasecmp(e, "bin") || !strcasecmp(e, "cue") || !strcasecmp(e, "img")) return S_DISC;
+    if (!strcasecmp(e, "mp4") || !strcasecmp(e, "m4v") || !strcasecmp(e, "mov") || !strcasecmp(e, "mkv") || !strcasecmp(e, "avi") ||
+        !strcasecmp(e, "wmv") || !strcasecmp(e, "m2ts") || !strcasecmp(e, "ts")) return S_VIDEO;
     return S_NONE;
 }
 
@@ -202,7 +204,7 @@ static size_t wr_cb(void *ptr, size_t sz, size_t nm, void *ud)
     return n;
 }
 
-static int fetch(CURL *c, const char *url, mem_t *m)
+static int fetch_raw(CURL *c, const char *url, mem_t *m, int need_image)
 {
     m->len = 0;
     curl_easy_setopt(c, CURLOPT_URL, url);
@@ -218,8 +220,105 @@ static int fetch(CURL *c, const char *url, mem_t *m)
     long code = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
     if (code != 200 || m->len < 64) return 0;
+    if (!need_image) return 1;
     /* must be an image */
     return (m->data[0] == 0x89 && m->data[1] == 'P') || (m->data[0] == 0xFF && m->data[1] == 0xD8);
+}
+
+static int fetch(CURL *c, const char *url, mem_t *m) { return fetch_raw(c, url, m, 1); }
+
+/* ---------------------------------------------------------------- movies */
+
+/* "The.Dark.Knight.2008.1080p.BluRay.x264.mp4" -> query "The Dark Knight 2008" */
+static void movie_query(const char *name, char *out, int n)
+{
+    char t[256];
+    snprintf(t, sizeof(t), "%s", name);
+    char *dot = strrchr(t, '.'); if (dot) *dot = 0;
+    for (char *p = t; *p; p++) if (*p == '.' || *p == '_' || *p == '[' || *p == ']' || *p == '(' || *p == ')') *p = ' ';
+    static const char *junk[] = { "1080p", "720p", "2160p", "480p", "4k", "bluray", "blu-ray", "brrip", "bdrip", "webrip", "web-dl", "web",
+                                  "hdrip", "dvdrip", "x264", "x265", "h264", "hevc", "aac", "hdtv", "yify", "yts", "remux", NULL };
+    char *words[64]; int nw = 0;
+    char *save = NULL;
+    for (char *w = strtok_r(t, " ", &save); w && nw < 64; w = strtok_r(NULL, " ", &save)) words[nw++] = w;
+    int o = 0;
+    out[0] = 0;
+    for (int i = 0; i < nw; i++) {
+        int is_junk = 0;
+        for (int j = 0; junk[j]; j++) if (!strcasecmp(words[i], junk[j])) is_junk = 1;
+        if (is_junk) break;
+        int year = strlen(words[i]) == 4 && (words[i][0] == '1' || words[i][0] == '2') && words[i][1] >= '0' && words[i][1] <= '9';
+        o += snprintf(out + o, n - o, "%s%s", o ? " " : "", words[i]);
+        if (year && i > 0) break;          /* title ends at the year */
+        if (o >= n - 1) break;
+    }
+}
+
+static int looks_like_movie(const char *name, uint64_t size)
+{
+    if (size >= 300ULL * 1024 * 1024) return 1;
+    for (const char *p = name; *p; p++)
+        if ((p[0] == '1' && p[1] == '9') || (p[0] == '2' && p[1] == '0'))
+            if (p[2] >= '0' && p[2] <= '9' && p[3] >= '0' && p[3] <= '9' && (p == name || p[-1] < '0' || p[-1] > '9') && (p[4] < '0' || p[4] > '9')) return 1;
+    return 0;
+}
+
+/* poster via Wikipedia: search "<title> film", take the page's lead image */
+static int try_wikipedia(CURL *c, const char *query, mem_t *m)
+{
+    char q[300], url[1024];
+    snprintf(q, sizeof(q), "%s film", query);
+    char *eq = curl_easy_escape(c, q, 0);
+    snprintf(url, sizeof(url), "https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=1&gsrsearch=%s&prop=pageimages&piprop=thumbnail&pithumbsize=500", eq);
+    curl_free(eq);
+    if (!fetch_raw(c, url, m, 0)) return 0;
+    /* find "source":"https://upload.wikimedia.org/..." */
+    m->data[m->len < m->cap ? m->len : m->len - 1] = 0;
+    char *src = strstr((char *)m->data, "\"source\":\"");
+    if (!src) return 0;
+    src += 10;
+    char img[900]; int k = 0;
+    for (; *src && *src != '"' && k < (int)sizeof(img) - 1; src++) { if (*src == '\\') continue; img[k++] = *src; }
+    img[k] = 0;
+    if (strncmp(img, "https://", 8)) return 0;
+    return fetch(c, img, m);
+}
+
+/* cover art stored inside an MP4: moov/udta/meta/ilst/covr/data */
+static int mp4_find(vfs_file_t *f, uint64_t start, uint64_t end, const char *type, uint64_t *pos, uint64_t *len)
+{
+    uint64_t p = start;
+    uint8_t h[16];
+    while (p + 8 <= end) {
+        if (vfs_seek(f, p) != 0 || vfs_read(f, h, 8) != 8) return 0;
+        uint64_t sz = ((uint32_t)h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3];
+        uint32_t hl = 8;
+        if (sz == 1) { if (vfs_read(f, h + 8, 8) != 8) return 0; sz = ((uint64_t)(((uint32_t)h[8] << 24) | (h[9] << 16) | (h[10] << 8) | h[11]) << 32) | (((uint32_t)h[12] << 24) | (h[13] << 16) | (h[14] << 8) | h[15]); hl = 16; }
+        else if (sz == 0) sz = end - p;
+        if (sz < hl) return 0;
+        if (!memcmp(h + 4, type, 4)) { *pos = p + hl; *len = sz - hl; return 1; }
+        p += sz;
+    }
+    return 0;
+}
+
+static int mp4_cover(const char *path, uint8_t **out, uint32_t *outlen)
+{
+    vfs_file_t *f = vfs_open_read(path);
+    if (!f) return 0;
+    uint64_t end = vfs_size(f), p, l, ok = 0;
+    if (mp4_find(f, 0, end, "moov", &p, &l) && mp4_find(f, p, p + l, "udta", &p, &l) && mp4_find(f, p, p + l, "meta", &p, &l)) {
+        p += 4; l -= 4;   /* meta is a full box */
+        if (mp4_find(f, p, p + l, "ilst", &p, &l) && mp4_find(f, p, p + l, "covr", &p, &l) && mp4_find(f, p, p + l, "data", &p, &l) && l > 8 && l < 4 * 1024 * 1024) {
+            p += 8; l -= 8;   /* type + locale */
+            uint8_t *b = (uint8_t *)malloc((size_t)l);
+            if (b && vfs_seek(f, p) == 0 && vfs_read(f, b, (uint32_t)l) == (int64_t)l && ((b[0] == 0xFF && b[1] == 0xD8) || (b[0] == 0x89 && b[1] == 'P'))) {
+                *out = b; *outlen = (uint32_t)l; ok = 1;
+            } else free(b);
+        }
+    }
+    vfs_close(f);
+    return (int)ok;
 }
 
 static void libretro_name(const char *in, char *out, int n)
@@ -282,6 +381,7 @@ static int try_libretro(CURL *c, int sys, const char *game, mem_t *m)
 static int download(CURL *c, const job_t *j, mem_t *m)
 {
     char url[512];
+    if (j->sys == S_VIDEO) return try_wikipedia(c, j->id, m);
     if (j->sys == S_PS2 || j->sys == S_PS1) {
         if (j->id[4] == '-') {   /* serial */
             snprintf(url, sizeof(url), "https://raw.githubusercontent.com/xlenore/%s/main/covers/default/%s.jpg",
@@ -431,6 +531,34 @@ int covers_lookup(const char *full, const char *name, int is_dir, char *out, int
             snprintf(id, sizeof(id), "%.*s", (int)(strrchr(name, '.') ? strrchr(name, '.') - name : (long)strlen(name)), name);
         }
         return queue(sys, id, key);
+    }
+
+    if (sys == S_VIDEO) {
+        sanitize(name, tmp, sizeof(tmp));
+        snprintf(key, sizeof(key), "v_%s", tmp);
+        int st = cached(key, out, n);
+        if (st != CV_NONE) return st;
+        /* 1) cover embedded in the file */
+        const char *e = ext(name);
+        if (!strcasecmp(e, "mp4") || !strcasecmp(e, "m4v") || !strcasecmp(e, "mov")) {
+            uint8_t *img = NULL; uint32_t il = 0;
+            if (mp4_cover(full, &img, &il)) {
+                snprintf(out, n, "%s/%s.%s", cache_dir, key, img[0] == 0x89 ? "png" : "jpg");
+                save(out, img, il);
+                free(img);
+                return CV_CACHED;
+            }
+        }
+        /* 2) movie poster online */
+        uint64_t sz = 0; int d = 0;
+        vfs_stat(full, &d, &sz);
+        if (!looks_like_movie(name, sz)) {
+            char miss[700]; snprintf(miss, sizeof(miss), "%s/%s.none", cache_dir, key); save(miss, "", 0);
+            return CV_MISSING;
+        }
+        movie_query(name, id, sizeof(id));
+        if (!id[0]) return CV_NONE;
+        return queue(S_VIDEO, id, key);
     }
 
     /* cartridge ROM: libretro name = file name without extension */
