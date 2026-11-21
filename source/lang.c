@@ -159,6 +159,12 @@ static const char *en[S_COUNT] = {
     [S_PREPARING] = "Preparing...",
     [S_PLAY_GAME] = "Play game?",
     [S_LAUNCH_FAIL] = "Couldn't prepare the file",
+    [S_WM_PLAY] = "Play with webMAN MOD",
+    [S_WM_Q] = "Mount and play this game?",
+    [S_WM_HINT] = "Returns to XMB — start the game from the disc icon",
+    [S_WM_NOT_RUNNING] = "webMAN MOD isn't running",
+    [S_WM_NO_CACHE] = "Not in webMAN's list yet: refresh webMAN (prepISO) first",
+    [S_WM_ERR] = "webMAN couldn't mount this game",
 };
 
 static const char *ar[S_COUNT] = {
@@ -318,6 +324,12 @@ static const char *ar[S_COUNT] = {
     [S_PREPARING] = "جارٍ التجهيز...",
     [S_PLAY_GAME] = "تشغيل اللعبة؟",
     [S_LAUNCH_FAIL] = "تعذّر تجهيز الملف",
+    [S_WM_PLAY] = "تشغيل عبر webMAN MOD",
+    [S_WM_Q] = "تركيب اللعبة وتشغيلها؟",
+    [S_WM_HINT] = "يرجع إلى XMB — شغّل اللعبة من أيقونة القرص",
+    [S_WM_NOT_RUNNING] = "webMAN MOD لا يعمل",
+    [S_WM_NO_CACHE] = "ليست في قائمة webMAN بعد: حدّث webMAN (prepISO) أولاً",
+    [S_WM_ERR] = "تعذّر على webMAN تركيب اللعبة",
 };
 
 const char *T(int id)

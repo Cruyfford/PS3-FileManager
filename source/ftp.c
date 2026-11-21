@@ -27,6 +27,18 @@ static int net_ready;
 static int ftp_port_num = 21;
 static char last_err[64];
 
+int net_up(void)
+{
+    if (net_ready) return 0;
+    sysModuleLoad(SYSMODULE_NET);
+    sysModuleLoad(SYSMODULE_NETCTL);
+    int r = netInitialize();
+    if (r < 0) return r;
+    netCtlInit();
+    net_ready = 1;
+    return 0;
+}
+
 int ftp_port(void) { return ftp_port_num; }
 const char *ftp_error(void) { return last_err; }
 
@@ -312,14 +324,8 @@ int ftp_start(void)
 {
     if (running) return 1;
     last_err[0] = 0;
-    if (!net_ready) {
-        sysModuleLoad(SYSMODULE_NET);
-        sysModuleLoad(SYSMODULE_NETCTL);
-        int r = netInitialize();
-        if (r < 0) { snprintf(last_err, sizeof(last_err), "netInitialize %d", r); return 0; }
-        netCtlInit();
-        net_ready = 1;
-    }
+    int r = net_up();
+    if (r < 0) { snprintf(last_err, sizeof(last_err), "netInitialize %d", r); return 0; }
     refresh_ip();
     if (!ip_str[0]) { snprintf(last_err, sizeof(last_err), "no IP"); }
 

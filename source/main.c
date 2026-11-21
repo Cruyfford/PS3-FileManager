@@ -28,6 +28,8 @@
 #include "archive.h"
 #include "arabic.h"
 #include "launcher.h"
+#include "webman.h"
+#define SYS_WEBMAN 100
 
 #define APP_DIR   "/dev_hdd0/game/CRPK00001/USRDIR"
 #define CFG_FILE  APP_DIR "/settings.cfg"
@@ -840,8 +842,8 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
 
 static int cur_writable(void) { return vol_count && vols[vol_sel].writable; }
@@ -877,6 +879,7 @@ static int menu_enabled(int m)
         case M_OPEN: return has && ents[sel].is_dir && !marked_count();
         case M_INSTALL: return count_targets(1, NULL) > 0;
         case M_EXTRACT: return has && !marked_count() && ents[sel].type == FT_PKG;
+        case M_WEBMAN: return has && !marked_count();
         case M_BUILD: return cursor_is_pkg_folder();
         case M_EDITSFO: { char t[1400]; return cursor_sfo(t, sizeof(t)); }
         case M_EXTRACT_ARC: return has && !marked_count() && archive_kind(ents[sel].name) != ARC_NONE && cur_writable();
@@ -898,6 +901,7 @@ static void build_menu(void)
         if (m == M_OPEN && !(ent_count && ents[sel].is_dir)) continue;
         if (m == M_INSTALL && !count_targets(1, NULL)) continue;
         if (m == M_EXTRACT && !(ent_count && ents[sel].type == FT_PKG && !marked_count())) continue;
+        if (m == M_WEBMAN) { if (!ent_count) continue; char fp[1400]; path_join(fp, sizeof(fp), cwd, ents[sel].name); if (!webman_is_game(ents[sel].name, ents[sel].is_dir, fp)) continue; }
         if (m == M_BUILD && !cursor_is_pkg_folder()) continue;
         if (m == M_EDITSFO) { char t[1400]; if (!cursor_sfo(t, sizeof(t))) continue; }
         if (m == M_EXTRACT_ARC && !(ent_count && archive_kind(ents[sel].name) != ARC_NONE)) continue;
@@ -1577,7 +1581,8 @@ static void ask_launch(int idx)
     entry_t *e = &ents[idx];
     launch_sys = launch_kind(e->name);
     path_join(launch_src, sizeof(launch_src), cwd, e->name);
-    if (launch_sys != SYS_SELF) {
+    if (webman_is_game(e->name, e->is_dir, launch_src)) launch_sys = SYS_WEBMAN;
+    if (launch_sys != SYS_SELF && launch_sys != SYS_WEBMAN) {
         char m[128];
         if (!launch_retroarch_installed()) { snprintf(m, sizeof(m), T(S_NO_RA), launch_system_name(launch_sys)); show_toast(m); return; }
         if (!launch_find_core(launch_sys, launch_core, sizeof(launch_core), launch_core_name, sizeof(launch_core_name))) {
@@ -1594,10 +1599,12 @@ static void draw_confirm_launch(void)
     draw_modal_frame(w, h, &x, &y);
     const char *bn = strrchr(launch_src, '/');
     bn = bn ? bn + 1 : launch_src;
-    gfx_text(SCR_W / 2, y + 22, launch_sys == SYS_SELF ? T(S_LAUNCH_Q) : T(S_PLAY_GAME), 20, 1, C_TEXT, ALIGN_CENTER);
+    gfx_text(SCR_W / 2, y + 22, launch_sys == SYS_SELF ? T(S_LAUNCH_Q) : launch_sys == SYS_WEBMAN ? T(S_WM_Q) : T(S_PLAY_GAME), 20, 1, C_TEXT, ALIGN_CENTER);
     draw_file_icon(MXP(SCR_W / 2) - (RTL() ? -28 : 28), y + 60, 56, launch_sys == SYS_SELF ? FT_SYSTEM : FT_DISC, bn);
     gfx_text_fit(SCR_W / 2, y + 126, w - 60, bn, 14, 1, C_TEXT, ALIGN_CENTER);
-    if (launch_sys != SYS_SELF) {
+    if (launch_sys == SYS_WEBMAN) {
+        gfx_text_fit(SCR_W / 2, y + 150, w - 60, T(S_WM_HINT), 11, 0, C_DIM, ALIGN_CENTER);
+    } else if (launch_sys != SYS_SELF) {
         char m[160]; snprintf(m, sizeof(m), T(S_PLAY_WITH), launch_core_name);
         gfx_text_fit(SCR_W / 2, y + 150, w - 60, m, 11, 0, C_DIM, ALIGN_CENTER);
     }
@@ -1607,6 +1614,14 @@ static void draw_confirm_launch(void)
 static void do_launch(void)
 {
     char native[1400];
+    if (launch_sys == SYS_WEBMAN) {
+        ui = UI_BROWSE;
+        int r = webman_resolve(launch_src, native, sizeof(native));
+        if (r == WM_OK) r = webman_mount(native);
+        if (r == WM_OK) { quit_req = 1; return; }      /* back to XMB: the game is on the disc icon */
+        show_toast(r == WM_NOT_RUNNING ? T(S_WM_NOT_RUNNING) : r == WM_NO_CACHE ? T(S_WM_NO_CACHE) : T(S_WM_ERR));
+        return;
+    }
     if (!launch_prepare(launch_src, native, sizeof(native))) { show_toast(T(S_LAUNCH_FAIL)); ui = UI_BROWSE; return; }
     if (launch_sys == SYS_SELF) { snprintf(pending_self, sizeof(pending_self), "%s", native); pending_arg[0] = 0; }
     else { snprintf(pending_self, sizeof(pending_self), "%s", launch_core); snprintf(pending_arg, sizeof(pending_arg), "%s", native); }
@@ -1684,6 +1699,7 @@ static void run_menu_action(int m)
     switch (m) {
     case M_OPEN: { char p[1400]; path_join(p, sizeof(p), cwd, ents[sel].name); open_dir(p, NULL); break; }
     case M_INSTALL: confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); break;
+    case M_WEBMAN: ask_launch(sel); break;
     case M_EXTRACT: {
         char src[1400];
         path_join(src, sizeof(src), cwd, ents[sel].name);
@@ -1797,6 +1813,7 @@ static void handle_browse(void)
         else if (!strcasecmp(e->name, "PARAM.SFO")) run_menu_action(M_EDITSFO);
         else if (archive_kind(e->name) != ARC_NONE && cur_writable()) run_menu_action(M_EXTRACT_ARC);
         else if (launch_kind(e->name) != SYS_NONE) ask_launch(sel);
+        else if (!e->is_dir) { char fp[1400]; path_join(fp, sizeof(fp), cwd, e->name); if (webman_is_game(e->name, 0, fp)) ask_launch(sel); else open_entry(sel); }
         else open_entry(sel);
     }
 }
@@ -2012,7 +2029,8 @@ int main(void)
                 entry_t *e = &ents[sel];
                 int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
                           audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC :
-                          launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY : S_PROPS;
+                          launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY :
+                          !strcasecmp(ext_of(e->name), "iso") ? S_PLAY : S_PROPS;
                 h[n++] = (hint_t){ ok_icon, lbl };
             }
             h[n++] = (hint_t){ cancel_icon, S_BACK };

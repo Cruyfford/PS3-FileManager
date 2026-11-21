@@ -1,6 +1,7 @@
 #pragma once
 #include "vfs.h"
 
+int  net_up(void);                    /* loads net modules once; <0 on error */
 int  ftp_start(void);                 /* starts the server thread on port 21 */
 void ftp_stop(void);
 int  ftp_running(void);
