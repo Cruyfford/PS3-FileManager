@@ -27,3 +27,13 @@ int  video_cycle_audio(char *label, int n);       /* 0 = only one track */
 void video_sub_delay_add(double d);
 double video_sub_delay(void);
 const char *video_debug_info(void);
+int  video_sub_count(void);
+const char *video_sub_label(int i);
+int  video_sub_current(void);
+void video_sub_select(int i);
+int  video_add_subtitle_file(const char *path);   /* 1 = loaded and selected */
+int  video_audio_count(void);
+const char *video_audio_label(int i);
+int  video_audio_current(void);
+void video_audio_select(int i);
+void video_set_aspect(int mode);                  /* 0 fit, 1 fill, 2 stretch */

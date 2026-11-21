@@ -728,37 +728,93 @@ void video_seek(int delta)
     restart_at(video_position() + delta);
 }
 
-int video_cycle_subtitle(char *label, int n)
+/* ---- subtitle / audio track selection ---- */
+int video_sub_count(void) { return dmx ? nsubopts : 0; }
+const char *video_sub_label(int i) { return (i >= 0 && i < nsubopts) ? subopts[i].label : ""; }
+int video_sub_current(void) { return cursub; }
+
+void video_sub_select(int i)
 {
-    if (!dmx || nsubopts <= 1) { snprintf(label, n, "Off"); return 0; }
-    int next = (cursub + 1) % nsubopts;
+    if (!dmx || i < 0 || i >= nsubopts || i == cursub) return;
     int was_embedded = cursub > 0 && subopts[cursub].kind == 1;
-    apply_sub(next);
-    snprintf(label, n, "%s", subopts[next].label);
+    apply_sub(i);
     /* embedded tracks are collected while demuxing: restart from here so the current line shows */
-    if (subopts[next].kind == 1 || was_embedded) restart_at(video_position());
+    if (subopts[i].kind == 1 || was_embedded) restart_at(video_position());
+}
+
+int video_add_subtitle_file(const char *path)
+{
+    if (!dmx) return 0;
+    for (int i = 0; i < nsubopts; i++) if (subopts[i].kind == 2 && !strcmp(subopts[i].path, path)) { video_sub_select(i); return 1; }
+    sublist_t test; memset(&test, 0, sizeof(test));
+    int ok = subs_load_file(path, &test);
+    subs_free(&test);
+    if (!ok) return 0;
+    int slot = nsubopts < 24 ? nsubopts++ : 23;
+    subopts[slot].kind = 2;
+    snprintf(subopts[slot].path, sizeof(subopts[slot].path), "%s", path);
+    const char *b = strrchr(path, '/');
+    snprintf(subopts[slot].label, sizeof(subopts[slot].label), "%s", b ? b + 1 : path);
+    video_sub_select(slot);
     return 1;
 }
 
-int video_cycle_audio(char *label, int n)
+int video_cycle_subtitle(char *label, int n)
 {
+    if (!dmx || nsubopts <= 1) { snprintf(label, n, "Off"); return 0; }
+    video_sub_select((cursub + 1) % nsubopts);
+    snprintf(label, n, "%s", subopts[cursub].label);
+    return 1;
+}
+
+static int audio_list(int *list)
+{
+    int cnt = 0;
     if (!dmx) return 0;
-    int list[MAX_STREAMS], cnt = 0, cur = -1;
-    for (int i = 0; i < dmx->nst; i++) if (dmx->st[i].type == ST_AUDIO && audio_codec_playable(dmx->st[i].codec)) { if (i == asi) cur = cnt; list[cnt++] = i; }
-    if (cnt <= 1) return 0;
-    int ni = list[(cur + 1) % cnt];
+    for (int i = 0; i < dmx->nst; i++) if (dmx->st[i].type == ST_AUDIO && audio_codec_playable(dmx->st[i].codec)) list[cnt++] = i;
+    return cnt;
+}
+
+int video_audio_count(void) { int l[MAX_STREAMS]; return audio_list(l); }
+
+const char *video_audio_label(int k)
+{
+    static char b[128];
+    int l[MAX_STREAMS], n = audio_list(l);
+    if (k < 0 || k >= n) return "";
+    stream_t *s = &dmx->st[l[k]];
+    snprintf(b, sizeof(b), "%s%s%s · %s", s->name[0] ? s->name : "Audio", s->lang[0] ? " · " : "", s->lang, codec_name(s));
+    return b;
+}
+
+int video_audio_current(void) { int l[MAX_STREAMS], n = audio_list(l); for (int k = 0; k < n; k++) if (l[k] == asi) return k; return -1; }
+
+void video_audio_select(int k)
+{
+    int l[MAX_STREAMS], n = audio_list(l);
+    if (k < 0 || k >= n || l[k] == asi) return;
+    int ni = l[k];
     double pos = video_position();
     stop_threads();
     if (ad) { adec_close(ad); ad = NULL; }
     ad = adec_open(&dmx->st[ni]);
     asi = ad ? ni : -1;
     if (asi >= 0 && !ring) ring = (float *)malloc(sizeof(float) * 2 * RING_FR);
-    stream_t *s = &dmx->st[ni];
-    snprintf(label, n, "%s%s%s · %s", s->name[0] ? s->name : "Audio", s->lang[0] ? " · " : "", s->lang, codec_name(s));
     set_fmt_info();
     restart_at(pos);
+}
+
+int video_cycle_audio(char *label, int n)
+{
+    int cnt = video_audio_count();
+    if (cnt <= 1) return 0;
+    video_audio_select((video_audio_current() + 1) % cnt);
+    snprintf(label, n, "%s", video_audio_label(video_audio_current()));
     return 1;
 }
+
+static int aspect_mode;   /* 0 fit, 1 fill (crop), 2 stretch */
+void video_set_aspect(int m) { aspect_mode = m; }
 
 static void ensure_textures(int w, int h)
 {
@@ -895,8 +951,9 @@ void video_render(float x, float y, float w, float h)
 {
     if (st == VID_PLAYING) fetch_pictures();
     if (cur_tex < 0 || !frame_w) return;
-    float sc = w / frame_w;
-    if (h / frame_h < sc) sc = h / frame_h;
+    float sx = w / frame_w, sy = h / frame_h;
+    float sc = aspect_mode == 1 ? (sx > sy ? sx : sy) : (sx < sy ? sx : sy);
     float dw = frame_w * sc, dh = frame_h * sc;
+    if (aspect_mode == 2) { dw = w; dh = h; }
     gfx_texture(tex[cur_tex], x + (w - dw) / 2, y + (h - dh) / 2, dw, dh, 0xFFFFFFFF);
 }

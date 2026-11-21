@@ -1397,6 +1397,15 @@ static char vid_name[256];
 static uint64_t vid_last_input;
 static int vid_err_shown;
 static int sub_size = 1;   /* 0 small, 1 medium, 2 large */
+static char vid_path[1400];
+/* player preferences (saved) */
+typedef struct { int size, color, pos, bg, aspect, debug; } pprefs_t;
+static pprefs_t pp = { 1, 0, 0, 0, 0, 0 };
+#define PP_FILE APP_DIR "/player.cfg"
+static void pp_load(void) { FILE *f = fopen(PP_FILE, "rb"); if (f) { pprefs_t t; if (fread(&t, sizeof(t), 1, f) == 1) pp = t; fclose(f); } sub_size = pp.size % 3; video_set_aspect(pp.aspect % 3); }
+static void pp_save(void) { pp.size = sub_size; FILE *f = fopen(PP_FILE, "wb"); if (f) { fwrite(&pp, sizeof(pp), 1, f); fclose(f); } }
+static int vid_panel;      /* 0 none, 1 settings, 2 subtitle file picker */
+static int vp_sel;
 
 static void video_start(int idx)
 {
@@ -1408,6 +1417,9 @@ static void video_start(int idx)
     }
     audio_stop();
     snprintf(vid_name, sizeof(vid_name), "%s", ents[idx].name);
+    snprintf(vid_path, sizeof(vid_path), "%s", p);
+    vid_panel = 0;
+    pp_load();
     vid_last_input = gfx_frame();
     vid_err_shown = 0;
     ui = UI_VIDEO;
@@ -1451,12 +1463,20 @@ static void draw_subtitles(float bottom)
         if (cur[0] && nl < 12) snprintf(lines[nl++], 400, "%s", cur);
     }
     float lh = sz * 1.35f;
+    bottom -= (pp.pos % 5) * 22;
     float y = bottom - nl * lh;
+    static const uint32_t cols[3] = { RGBA8(255, 255, 255, 255), RGBA8(255, 230, 90, 255), RGBA8(120, 230, 255, 255) };
+    uint32_t col = cols[pp.color % 3];
     for (int i = 0; i < nl; i++, y += lh) {
         float cx = SCR_W / 2;
-        static const float ox[8] = { -2, 2, 0, 0, -1.5f, 1.5f, -1.5f, 1.5f }, oy[8] = { 0, 0, -2, 2, -1.5f, -1.5f, 1.5f, 1.5f };
-        for (int k = 0; k < 8; k++) gfx_text(cx + ox[k], y + oy[k], lines[i], sz, 1, RGBA8(0, 0, 0, 230), ALIGN_CENTER);
-        gfx_text(cx, y, lines[i], sz, 1, RGBA8(255, 255, 255, 255), ALIGN_CENTER);
+        if (pp.bg == 1) {
+            float tw = gfx_text_width(lines[i], sz, 1) + 24;
+            gfx_rrect(cx - tw / 2, y - 3, tw, lh + 2, 6, RGBA8(0, 0, 0, 170));
+        } else {
+            static const float ox[8] = { -2, 2, 0, 0, -1.5f, 1.5f, -1.5f, 1.5f }, oy[8] = { 0, 0, -2, 2, -1.5f, -1.5f, 1.5f, 1.5f };
+            for (int k = 0; k < 8; k++) gfx_text(cx + ox[k], y + oy[k], lines[i], sz, 1, RGBA8(0, 0, 0, 230), ALIGN_CENTER);
+        }
+        gfx_text(cx, y, lines[i], sz, 1, col, ALIGN_CENTER);
     }
 }
 
@@ -1487,7 +1507,7 @@ static void draw_video(void)
         if (video_sub_delay() != 0) { char dl[48]; snprintf(dl, sizeof(dl), T(S_SUB_DELAY_L), video_sub_delay()); snprintf(info, sizeof(info), "%s  ·  %s", video_format_info(), dl); }
         else snprintf(info, sizeof(info), "%s", video_format_info());
         gfx_text_fit(RTL() ? SCR_W - 40 : 40, 40, SCR_W - 80, info, 11, 0, C_DIM, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
-        gfx_text_fit(RTL() ? SCR_W - 40 : 40, 56, SCR_W - 80, video_debug_info(), 10, 0, RGBA8(140, 150, 190, 200), RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+        if (pp.debug) gfx_text_fit(RTL() ? SCR_W - 40 : 40, 56, SCR_W - 80, video_debug_info(), 10, 0, RGBA8(140, 150, 190, 200), RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
     }
     /* bottom bar */
     gfx_grad_v(0, SCR_H - 120, SCR_W, 120, RGBA8(0, 0, 0, 0), RGBA8(0, 0, 0, 220));
@@ -1510,8 +1530,175 @@ static void draw_video(void)
     else gfx_circle(cx, cy, 4, RGBA8(255, 255, 255, 160));
 }
 
+/* ---------- player settings panel and subtitle file picker ---------- */
+enum { VP_SUBTRACK, VP_LOADSUB, VP_SUBSIZE, VP_SUBCOLOR, VP_SUBPOS, VP_SUBBG, VP_SUBDELAY, VP_AUDIO, VP_ASPECT, VP_DEBUG, VP_COUNT };
+static const int vp_label[VP_COUNT] = { S_PL_SUBTRACK, S_PL_LOADSUB, S_PL_SUBSIZE, S_PL_SUBCOLOR, S_PL_SUBPOS, S_PL_SUBBG, S_PL_SUBDELAY, S_PL_AUDIO, S_PL_ASPECT, S_PL_DEBUG };
+
+static void vp_value(int i, char *o, int n)
+{
+    o[0] = 0;
+    switch (i) {
+    case VP_SUBTRACK: { int c = video_sub_current(); snprintf(o, n, "%s", c <= 0 ? T(S_SUB_OFF_L) : video_sub_label(c)); break; }
+    case VP_SUBSIZE: { static const int nm[3] = { S_SMALL, S_MEDIUM, S_LARGE }; snprintf(o, n, "%s", T(nm[sub_size % 3])); break; }
+    case VP_SUBCOLOR: { static const int nm[3] = { S_C_WHITE, S_C_YELLOW, S_C_CYAN }; snprintf(o, n, "%s", T(nm[pp.color % 3])); break; }
+    case VP_SUBPOS: snprintf(o, n, "%d", pp.pos % 5); break;
+    case VP_SUBBG: snprintf(o, n, "%s", T(pp.bg ? S_BG_BOX : S_BG_OUTLINE)); break;
+    case VP_SUBDELAY: snprintf(o, n, "%+.1f s", video_sub_delay()); break;
+    case VP_AUDIO: { int c = video_audio_current(); snprintf(o, n, "%s", c < 0 ? "—" : video_audio_label(c)); break; }
+    case VP_ASPECT: { static const int nm[3] = { S_ASP_FIT, S_ASP_FILL, S_ASP_STRETCH }; snprintf(o, n, "%s", T(nm[pp.aspect % 3])); break; }
+    case VP_DEBUG: snprintf(o, n, "%s", T(pp.debug ? S_ON : S_OFF)); break;
+    }
+}
+
+static void vp_change(int i, int d)
+{
+    switch (i) {
+    case VP_SUBTRACK: { int n = video_sub_count(); if (n > 1) video_sub_select((video_sub_current() + d + n) % n); break; }
+    case VP_SUBSIZE: sub_size = (sub_size + d + 3) % 3; break;
+    case VP_SUBCOLOR: pp.color = (pp.color + d + 3) % 3; break;
+    case VP_SUBPOS: pp.pos = (pp.pos + d + 5) % 5; break;
+    case VP_SUBBG: pp.bg = !pp.bg; break;
+    case VP_SUBDELAY: video_sub_delay_add(d * 0.1); break;
+    case VP_AUDIO: { int n = video_audio_count(); if (n > 1) video_audio_select((video_audio_current() + d + n) % n); break; }
+    case VP_ASPECT: pp.aspect = (pp.aspect + d + 3) % 3; video_set_aspect(pp.aspect); break;
+    case VP_DEBUG: pp.debug = !pp.debug; break;
+    }
+    pp_save();
+}
+
+/* picker: "" = list of drives, otherwise a folder */
+static char pk_dir[1400];
+static vfs_entry_t *pk_ents;
+static int pk_n, pk_sel, pk_top;
+
+static int is_sub_name(const char *n)
+{
+    const char *e = strrchr(n, '.');
+    return e && (!strcasecmp(e, ".srt") || !strcasecmp(e, ".ass") || !strcasecmp(e, ".ssa") || !strcasecmp(e, ".vtt"));
+}
+
+static int pk_cmp(const void *a, const void *b)
+{
+    const vfs_entry_t *x = (const vfs_entry_t *)a, *y = (const vfs_entry_t *)b;
+    if (x->is_dir != y->is_dir) return y->is_dir - x->is_dir;
+    return strcasecmp(x->name, y->name);
+}
+
+static void pk_open(const char *dir)
+{
+    if (!pk_ents) pk_ents = (vfs_entry_t *)calloc(2048, sizeof(vfs_entry_t));
+    if (!pk_ents) return;
+    snprintf(pk_dir, sizeof(pk_dir), "%s", dir);
+    pk_n = 0; pk_sel = 0; pk_top = 0;
+    if (!dir[0]) {
+        for (int i = 0; i < vol_count && pk_n < 2048; i++) {
+            snprintf(pk_ents[pk_n].name, sizeof(pk_ents[pk_n].name), "%s", vols[i].label);
+            pk_ents[pk_n].is_dir = 1; pk_ents[pk_n].size = i; pk_n++;
+        }
+        return;
+    }
+    static vfs_entry_t tmp[2048];
+    int n = vfs_list(dir, tmp, 2048);
+    for (int i = 0; i < n; i++) if (tmp[i].is_dir || is_sub_name(tmp[i].name)) pk_ents[pk_n++] = tmp[i];
+    qsort(pk_ents, pk_n, sizeof(vfs_entry_t), pk_cmp);
+}
+
+static void pk_up(void)
+{
+    if (!pk_dir[0]) { vid_panel = 1; return; }
+    for (int i = 0; i < vol_count; i++) if (!strcmp(pk_dir, vols[i].root)) { pk_open(""); return; }
+    char p[1400];
+    snprintf(p, sizeof(p), "%s", pk_dir);
+    size_t l = strlen(p);
+    if (l > 1 && p[l - 1] == '/') p[--l] = 0;
+    char *s = strrchr(p, '/');
+    if (!s) { pk_open(""); return; }
+    if (s == p || s[-1] == ':') s[1] = 0; else *s = 0;
+    pk_open(p);
+}
+
+static void draw_vid_panel(void)
+{
+    float w = 420, x = RTL() ? 0 : SCR_W - w, y = 0, h = SCR_H;
+    gfx_rect(x, y, w, h, RGBA8(10, 12, 30, 235));
+    gfx_rect(RTL() ? x + w - 1 : x, y, 1, h, RGBA8(255, 255, 255, 30));
+    float tx = RTL() ? x + w - 24 : x + 24;
+    int al = RTL() ? ALIGN_RIGHT : ALIGN_LEFT, ar = RTL() ? ALIGN_LEFT : ALIGN_RIGHT;
+    float vx = RTL() ? x + 24 : x + w - 24;
+    if (vid_panel == 1) {
+        gfx_text(tx, 22, T(S_PL_SETTINGS), 18, 1, C_TEXT, al);
+        for (int i = 0; i < VP_COUNT; i++) {
+            float iy = 62 + i * 38;
+            int s = i == vp_sel;
+            if (s) gfx_rrect(x + 10, iy - 4, w - 20, 34, 10, RGBA8(110, 100, 230, 90));
+            gfx_text_fit(tx, iy + 4, w * 0.5f, T(vp_label[i]), 13, s, s ? C_TEXT : C_DIM, al);
+            char v[160]; vp_value(i, v, sizeof(v));
+            if (v[0]) {
+                gfx_text_fit(vx, iy + 4, w * 0.42f, v, 13, 1, s ? RGBA8(175, 169, 236, 255) : C_TEXT, ar);
+                if (s && i != VP_LOADSUB) {
+                    float ax = RTL() ? vx + w * 0.42f + 4 : vx - w * 0.42f - 14;
+                    (void)ax;
+                }
+            }
+        }
+    } else {
+        gfx_text(tx, 22, T(S_PICK_SUB), 18, 1, C_TEXT, al);
+        gfx_text_fit(tx, 48, w - 48, pk_dir[0] ? pk_dir : T(S_DRIVES), 11, 0, C_DIM, al);
+        if (!pk_n) gfx_text_fit(x + w / 2, 120, w - 40, T(S_NO_SUB_FILES), 13, 0, C_DIM, ALIGN_CENTER);
+        int rows = 10;
+        if (pk_sel < pk_top) pk_top = pk_sel;
+        if (pk_sel >= pk_top + rows) pk_top = pk_sel - rows + 1;
+        for (int k = pk_top; k < pk_n && k < pk_top + rows; k++) {
+            float iy = 74 + (k - pk_top) * 36;
+            int s = k == pk_sel;
+            if (s) gfx_rrect(x + 10, iy - 4, w - 20, 32, 10, RGBA8(110, 100, 230, 90));
+            draw_file_icon(RTL() ? x + w - 44 : x + 20, iy - 1, 22, pk_ents[k].is_dir ? FT_DIR : FT_TEXT, pk_ents[k].name);
+            gfx_text_fit(RTL() ? x + w - 54 : x + 52, iy + 3, w - 80, pk_ents[k].name, 13, s, s ? C_TEXT : C_DIM, al);
+        }
+    }
+}
+
+static void handle_vid_panel(void)
+{
+    uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
+    if (vid_panel == 1) {
+        if (in_active & B_DOWN) vp_sel = (vp_sel + 1) % VP_COUNT;
+        if (in_active & B_UP) vp_sel = (vp_sel + VP_COUNT - 1) % VP_COUNT;
+        if (in_active & R) vp_change(vp_sel, 1);
+        if (in_active & L) vp_change(vp_sel, -1);
+        if (in_pressed & B_OK) {
+            if (vp_sel == VP_LOADSUB) {
+                /* start in the video's folder */
+                char d[1400]; snprintf(d, sizeof(d), "%s", vid_path);
+                char *s = strrchr(d, '/'); if (s) *s = 0;
+                pk_open(d);
+                if (!pk_n && pk_dir[0]) pk_open("");
+                vid_panel = 2;
+            } else vp_change(vp_sel, 1);
+        }
+        if (in_pressed & (B_CANCEL | B_START)) vid_panel = 0;
+        return;
+    }
+    /* picker */
+    if (pk_n && (in_active & B_DOWN)) pk_sel = (pk_sel + 1) % pk_n;
+    if (pk_n && (in_active & B_UP)) pk_sel = (pk_sel + pk_n - 1) % pk_n;
+    if (in_pressed & B_CANCEL) { pk_up(); return; }
+    if (in_pressed & B_START) { vid_panel = 0; return; }
+    if (pk_n && (in_pressed & B_OK)) {
+        vfs_entry_t *e = &pk_ents[pk_sel];
+        if (!pk_dir[0]) { pk_open(vols[(int)e->size].root); return; }
+        char p[1400];
+        path_join(p, sizeof(p), pk_dir, e->name);
+        if (e->is_dir) { pk_open(p); return; }
+        if (video_add_subtitle_file(p)) { show_toast(T(S_SUB_LOADED)); vid_panel = 0; }
+        else show_toast(T(S_SUB_LOAD_FAIL));
+    }
+}
+
 static void handle_video(void)
 {
+    if (vid_panel) { if (in_pressed) vid_last_input = gfx_frame(); handle_vid_panel(); return; }
+    if (in_pressed & B_START) { vid_panel = 1; vp_sel = 0; vid_last_input = gfx_frame(); return; }
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed) vid_last_input = gfx_frame();
     if (in_pressed & B_CANCEL) { video_close(); ui = UI_BROWSE; return; }
@@ -1539,6 +1726,7 @@ static void handle_video(void)
     }
     if (in_pressed & B_SELECT) {
         sub_size = (sub_size + 1) % 3;
+        pp_save();
         static const int nm[3] = { S_SMALL, S_MEDIUM, S_LARGE };
         char m[80]; snprintf(m, sizeof(m), T(S_SUB_SIZE_L), T(nm[sub_size])); show_toast(m);
     }
@@ -2363,8 +2551,12 @@ int main(void)
         gfx_begin_frame();
         if (ui == UI_VIDEO) {
             draw_video();
-            if (gfx_frame() - vid_last_input < 180 || video_state() != VID_PLAYING) {
-                hint_t h[6] = { { ok_icon, S_PAUSE }, { BTN_SQUARE, S_SUBTITLES }, { BTN_TRIANGLE, S_AUDIO_TRK }, { BTN_L1, S_SEEK60 }, { BTN_SELECT, S_SUB_SIZE_S }, { cancel_icon, S_STOP } };
+            if (vid_panel) {
+                draw_vid_panel();
+                if (vid_panel == 1) { hint_t h[3] = { { ok_icon, S_CHANGE }, { cancel_icon, S_CLOSE } }; draw_hints(h, 2); }
+                else { hint_t h[3] = { { ok_icon, S_SELECT_L }, { cancel_icon, S_UP_DIR }, { BTN_START, S_CLOSE } }; draw_hints(h, 3); }
+            } else if (gfx_frame() - vid_last_input < 180 || video_state() != VID_PLAYING) {
+                hint_t h[6] = { { ok_icon, S_PAUSE }, { BTN_SQUARE, S_SUBTITLES }, { BTN_TRIANGLE, S_AUDIO_TRK }, { BTN_L1, S_SEEK60 }, { BTN_START, S_SETTINGS }, { cancel_icon, S_STOP } };
                 draw_hints(h, 6);
             }
             draw_toast();
