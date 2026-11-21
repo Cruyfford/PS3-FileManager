@@ -264,6 +264,42 @@ int gfx_texture_size(texture_t t, int *w, int *h)
     return 1;
 }
 
+texture_t gfx_make_thumb(texture_t src, int maxw, int maxh)
+{
+    if (!src) return NULL;
+    int sw = src->imageWidth, sh = src->imageHeight;
+    if (src->format != TINY3D_TEX_FORMAT_A8R8G8B8 || (sw <= maxw && sh <= maxh)) return src;
+    float sc = (float)maxw / sw;
+    if ((float)maxh / sh < sc) sc = (float)maxh / sh;
+    int dw = (int)(sw * sc), dh = (int)(sh * sc);
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    texture_t t = ya2d_createTexture(dw, dh, TINY3D_TEX_FORMAT_A8R8G8B8);
+    if (!t) return src;
+    const uint32_t *in = (const uint32_t *)src->data;
+    uint32_t *out = (uint32_t *)t->data;
+    int spitch = src->rowBytes / 4, dpitch = t->rowBytes / 4;
+    /* 2x2 box filter around each sample point */
+    for (int y = 0; y < dh; y++) {
+        int sy = (int)((y + 0.5f) / sc), sy2 = sy + 1 < sh ? sy + 1 : sy;
+        if (sy >= sh) sy = sh - 1;
+        for (int x = 0; x < dw; x++) {
+            int sx = (int)((x + 0.5f) / sc), sx2 = sx + 1 < sw ? sx + 1 : sx;
+            if (sx >= sw) sx = sw - 1;
+            uint32_t p[4] = { in[sy * spitch + sx], in[sy * spitch + sx2], in[sy2 * spitch + sx], in[sy2 * spitch + sx2] };
+            uint32_t r = 0;
+            for (int sft = 0; sft < 32; sft += 8) {
+                uint32_t sum = 0;
+                for (int k = 0; k < 4; k++) sum += (p[k] >> sft) & 0xFF;
+                r |= ((sum / 4) & 0xFF) << sft;
+            }
+            out[y * dpitch + x] = r;
+        }
+    }
+    ya2d_freeTexture(src);
+    return t;
+}
+
 texture_t gfx_load_png_file(const char *path)
 {
     return ya2d_loadPNGfromFile(path);

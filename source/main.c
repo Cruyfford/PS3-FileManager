@@ -324,7 +324,13 @@ static int marked_count(void)
     return n;
 }
 
-/* parse one PKG per frame near the cursor; drop textures far away */
+static int thumbable(const char *n)
+{
+    const char *e = strrchr(n, '.');
+    return e && (!strcasecmp(e, ".png") || !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg"));
+}
+
+/* parse one PKG / load one image thumbnail per frame near the cursor; drop textures far away */
 static void lazy_parse(void)
 {
     for (int dist = 0; dist < 14; dist++) {
@@ -333,11 +339,29 @@ static void lazy_parse(void)
             int i = c[k];
             if (i < 0 || i >= ent_count) continue;
             entry_t *e = &ents[i];
-            if (e->type != FT_PKG || e->parsed) continue;
+            if (e->parsed) continue;
+            int img = e->type == FT_IMAGE && thumbable(e->name);
+            if (e->type != FT_PKG && !img) continue;
             char full[1400];
             path_join(full, sizeof(full), cwd, e->name);
+            if (img) {
+                e->parsed = 1;
+                if (e->size == 0 || e->size > 8 * 1024 * 1024) return;
+                vfs_file_t *f = vfs_open_read(full);
+                if (!f) return;
+                uint32_t sz = (uint32_t)e->size, got = 0;
+                uint8_t *b = (uint8_t *)malloc(sz);
+                while (b && got < sz) { int64_t r = vfs_read(f, b + got, sz - got); if (r <= 0) break; got += (uint32_t)r; }
+                vfs_close(f);
+                if (b && got == sz) {
+                    texture_t t = (b[0] == 0x89 && b[1] == 'P') ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
+                    e->icon = gfx_make_thumb(t, 128, 72);
+                }
+                free(b);
+                return;
+            }
             pkg_read_info(full, &e->info, 1);
-            if (e->info.icon) e->icon = gfx_load_png_buffer(e->info.icon, e->info.icon_size);
+            if (e->info.icon) e->icon = gfx_make_thumb(gfx_load_png_buffer(e->info.icon, e->info.icon_size), 128, 72);
             e->parsed = 1;
             return;
         }
@@ -570,9 +594,20 @@ static void draw_list(void)
 
             float ix = x + 20;
             float tx = ix + 44;
-            if (e->type == FT_PKG && e->icon) {
-                gfx_texture(e->icon, MX(ix, 60), ry + 5, 60, 33, RGBA8(255, 255, 255, 255));
+            if (e->icon) {
+                int tw0, th0;
+                gfx_texture_size(e->icon, &tw0, &th0);
+                float bw = 60, bh = 33, sc = bw / tw0;
+                if (bh / th0 < sc) sc = bh / th0;
+                float dw = tw0 * sc, dh = th0 * sc;
+                gfx_rrect(MX(ix, 60), ry + 5, 60, 33, 4, RGBA8(0, 0, 0, 90));
+                gfx_texture(e->icon, MX(ix, 60) + (60 - dw) / 2, ry + 5 + (33 - dh) / 2, dw, dh, RGBA8(255, 255, 255, 255));
                 gfx_rrect_border(MX(ix, 60) - 1, ry + 4, 62, 35, 4, 1, RGBA8(255, 255, 255, 60));
+                tx = ix + 72;
+            } else if (e->type == FT_IMAGE && thumbable(e->name) && !e->parsed) {
+                /* loading placeholder: pulsing tile */
+                int a = 40 + (int)(sinf(gfx_frame() * 0.15f) * 25);
+                gfx_rrect(MX(ix, 60), ry + 5, 60, 33, 4, RGBA8(255, 255, 255, a));
                 tx = ix + 72;
             } else draw_file_icon(ix, ry + 6, 30, e->type, e->name);
 

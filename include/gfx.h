@@ -32,6 +32,8 @@ texture_t gfx_load_png_buffer(const void *buf, uint32_t size);
 texture_t gfx_load_png_file(const char *path);
 texture_t gfx_load_jpg_buffer(const void *buf, uint32_t size);
 int gfx_texture_size(texture_t t, int *w, int *h);
+/* downscaled copy (keeps aspect) for list thumbnails; frees src */
+texture_t gfx_make_thumb(texture_t src, int maxw, int maxh);
 void gfx_texture(texture_t t, float x, float y, float w, float h, uint32_t tint);
 void gfx_free_texture(texture_t t);
 
