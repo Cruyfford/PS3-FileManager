@@ -210,6 +210,8 @@ static int file_type(const char *name, int is_dir)
         {"pkg",FT_PKG},{"p3t",FT_THEME},{"iso",FT_DISC},{"bin",FT_DISC},{"img",FT_DISC},{"cue",FT_DISC},{"mdf",FT_DISC},{"vob",FT_VIDEO},
         {"png",FT_IMAGE},{"jpg",FT_IMAGE},{"jpeg",FT_IMAGE},{"bmp",FT_IMAGE},{"gif",FT_IMAGE},{"gtf",FT_IMAGE},{"dds",FT_IMAGE},
         {"mp4",FT_VIDEO},{"mkv",FT_VIDEO},{"avi",FT_VIDEO},{"m2ts",FT_VIDEO},{"mts",FT_VIDEO},{"pam",FT_VIDEO},{"wmv",FT_VIDEO},
+        {"webm",FT_VIDEO},{"mov",FT_VIDEO},{"m4v",FT_VIDEO},{"3gp",FT_VIDEO},{"divx",FT_VIDEO},{"xvid",FT_VIDEO},{"ts",FT_VIDEO},{"tp",FT_VIDEO},{"trp",FT_VIDEO},{"mpg",FT_VIDEO},{"mpeg",FT_VIDEO},{"m2v",FT_VIDEO},{"flv",FT_VIDEO},
+        {"srt",FT_TEXT},{"ass",FT_TEXT},{"ssa",FT_TEXT},{"vtt",FT_TEXT},
         {"mp3",FT_AUDIO},{"ogg",FT_AUDIO},{"wav",FT_AUDIO},{"flac",FT_AUDIO},{"at3",FT_AUDIO},{"aac",FT_AUDIO},{"m4a",FT_AUDIO},
         {"zip",FT_ARCHIVE},{"rar",FT_ARCHIVE},{"7z",FT_ARCHIVE},{"tar",FT_ARCHIVE},{"gz",FT_ARCHIVE},
         {"self",FT_SYSTEM},{"sprx",FT_SYSTEM},{"prx",FT_SYSTEM},{"elf",FT_SYSTEM},{"sfo",FT_SYSTEM},{"rap",FT_SYSTEM},{"edat",FT_SYSTEM},{"sdat",FT_SYSTEM},
@@ -1394,6 +1396,7 @@ static void handle_audio(void)
 static char vid_name[256];
 static uint64_t vid_last_input;
 static int vid_err_shown;
+static int sub_size = 1;   /* 0 small, 1 medium, 2 large */
 
 static void video_start(int idx)
 {
@@ -1411,9 +1414,49 @@ static void video_start(int idx)
     if (!video_open(p)) {
         static const int msg[] = { S_VID_ERR_OPEN, S_VID_ERR_OPEN, S_VID_ERR_FORMAT, S_VID_ERR_CODEC, S_VID_ERR_DEC, S_VID_ERR_MEM };
         int e = video_error();
-        show_toast(T(msg[e >= 0 && e <= 5 ? e : 1]));
+        char m[200];
+        if (e == VERR_CODEC) snprintf(m, sizeof(m), T(S_VCODEC_NO), video_error_detail());
+        else if (e == VERR_DECODER) snprintf(m, sizeof(m), T(S_VDEC_FAIL), video_error_detail());
+        else snprintf(m, sizeof(m), "%s", T(msg[e >= 0 && e <= 5 ? e : 1]));
+        show_toast(m);
         video_close();
         ui = UI_BROWSE;
+        return;
+    }
+    if (video_audio_warning()[0]) { char m[200]; snprintf(m, sizeof(m), T(S_NO_AUDIO_FMT), video_audio_warning()); show_toast(m); }
+}
+
+/* subtitle text: word-wrapped, outlined, bottom centered; Arabic is shaped by gfx_text */
+static void draw_subtitles(float bottom)
+{
+    const char *txt = video_subtitle_text();
+    if (!txt[0]) return;
+    static const int sizes[3] = { 16, 20, 25 };
+    int sz = sizes[sub_size];
+    float maxw = SCR_W - 90;
+    char lines[12][400]; int nl = 0;
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "%s", txt);
+    char *save = NULL;
+    for (char *ln = strtok_r(buf, "\n", &save); ln && nl < 12; ln = strtok_r(NULL, "\n", &save)) {
+        /* wrap by words */
+        char cur[400] = "";
+        char *ws = NULL;
+        for (char *w = strtok_r(ln, " ", &ws); w; w = strtok_r(NULL, " ", &ws)) {
+            char test[400];
+            snprintf(test, sizeof(test), "%s%s%s", cur, cur[0] ? " " : "", w);
+            if (cur[0] && gfx_text_width(test, sz, 1) > maxw) { if (nl < 12) snprintf(lines[nl++], 400, "%s", cur); snprintf(cur, sizeof(cur), "%s", w); }
+            else snprintf(cur, sizeof(cur), "%s", test);
+        }
+        if (cur[0] && nl < 12) snprintf(lines[nl++], 400, "%s", cur);
+    }
+    float lh = sz * 1.35f;
+    float y = bottom - nl * lh;
+    for (int i = 0; i < nl; i++, y += lh) {
+        float cx = SCR_W / 2;
+        static const float ox[8] = { -2, 2, 0, 0, -1.5f, 1.5f, -1.5f, 1.5f }, oy[8] = { 0, 0, -2, 2, -1.5f, -1.5f, 1.5f, 1.5f };
+        for (int k = 0; k < 8; k++) gfx_text(cx + ox[k], y + oy[k], lines[i], sz, 1, RGBA8(0, 0, 0, 230), ALIGN_CENTER);
+        gfx_text(cx, y, lines[i], sz, 1, RGBA8(255, 255, 255, 255), ALIGN_CENTER);
     }
 }
 
@@ -1421,6 +1464,10 @@ static void draw_video(void)
 {
     gfx_rect(0, 0, SCR_W, SCR_H, RGBA8(0, 0, 0, 255));
     video_render(0, 0, SCR_W, SCR_H);
+    {
+        int ov = video_state() != VID_PLAYING || gfx_frame() - vid_last_input < 180;
+        draw_subtitles(ov ? SCR_H - 128 : SCR_H - 28);
+    }
     int vw, vhh, st = video_state();
     if (!video_size(&vw, &vhh) && st == VID_PLAYING) {
         float t = gfx_frame() / 60.0f;
@@ -1434,7 +1481,13 @@ static void draw_video(void)
     if (!show) return;
     /* top bar */
     gfx_grad_v(0, 0, SCR_W, 70, RGBA8(0, 0, 0, 200), RGBA8(0, 0, 0, 0));
-    gfx_text_fit(RTL() ? SCR_W - 40 : 40, 22, SCR_W - 80, vid_name, 16, 1, C_TEXT, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+    gfx_text_fit(RTL() ? SCR_W - 40 : 40, 16, SCR_W - 80, vid_name, 16, 1, C_TEXT, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+    {
+        char info[160];
+        if (video_sub_delay() != 0) { char dl[48]; snprintf(dl, sizeof(dl), T(S_SUB_DELAY_L), video_sub_delay()); snprintf(info, sizeof(info), "%s  ·  %s", video_format_info(), dl); }
+        else snprintf(info, sizeof(info), "%s", video_format_info());
+        gfx_text_fit(RTL() ? SCR_W - 40 : 40, 40, SCR_W - 80, info, 11, 0, C_DIM, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
+    }
     /* bottom bar */
     gfx_grad_v(0, SCR_H - 120, SCR_W, 120, RGBA8(0, 0, 0, 0), RGBA8(0, 0, 0, 220));
     double pos = video_position(), dur = video_duration();
@@ -1469,6 +1522,25 @@ static void handle_video(void)
     if (in_pressed & L) video_seek(-10);
     if (in_pressed & B_R1) video_seek(60);
     if (in_pressed & B_L1) video_seek(-60);
+    if (in_pressed & B_SQU) {
+        char lb[120], m[200];
+        if (video_cycle_subtitle(lb, sizeof(lb))) { snprintf(m, sizeof(m), T(S_SUB_LABEL), strcmp(lb, "Off") ? lb : T(S_SUB_OFF_L)); show_toast(m); }
+        else show_toast(T(S_NO_SUBS));
+    }
+    if (in_pressed & B_TRI) {
+        char lb[120], m[200];
+        if (video_cycle_audio(lb, sizeof(lb))) { snprintf(m, sizeof(m), T(S_AUD_LABEL), lb); show_toast(m); }
+        else show_toast(T(S_ONE_AUDIO));
+    }
+    if (in_active & (B_R2 | B_L2)) {
+        video_sub_delay_add((in_active & B_R2) ? 0.1 : -0.1);
+        char m[80]; snprintf(m, sizeof(m), T(S_SUB_DELAY_L), video_sub_delay()); show_toast(m);
+    }
+    if (in_pressed & B_SELECT) {
+        sub_size = (sub_size + 1) % 3;
+        static const int nm[3] = { S_SMALL, S_MEDIUM, S_LARGE };
+        char m[80]; snprintf(m, sizeof(m), T(S_SUB_SIZE_L), T(nm[sub_size])); show_toast(m);
+    }
     if (video_state() == VID_ERROR && !vid_err_shown) { vid_err_shown = 1; show_toast(T(S_VID_ERR_DEC)); video_close(); ui = UI_BROWSE; }
 }
 
@@ -2291,8 +2363,8 @@ int main(void)
         if (ui == UI_VIDEO) {
             draw_video();
             if (gfx_frame() - vid_last_input < 180 || video_state() != VID_PLAYING) {
-                hint_t h[5] = { { ok_icon, S_PAUSE }, { BTN_L1, S_SEEK60 }, { BTN_R1, S_SEEK60 }, { cancel_icon, S_STOP } };
-                draw_hints(h, 4);
+                hint_t h[6] = { { ok_icon, S_PAUSE }, { BTN_SQUARE, S_SUBTITLES }, { BTN_TRIANGLE, S_AUDIO_TRK }, { BTN_L1, S_SEEK60 }, { BTN_SELECT, S_SUB_SIZE_S }, { cancel_icon, S_STOP } };
+                draw_hints(h, 6);
             }
             draw_toast();
             gfx_end_frame();

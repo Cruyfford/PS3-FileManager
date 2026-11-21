@@ -17,9 +17,9 @@ include $(PSL1GHT)/ppu_rules
 
 TARGET		:=	FileManager
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source third_party/a52
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include third_party/a52
 PKGFILES	:=	$(CURDIR)/pkgfiles
 
 LIBS		:=	$(PROJECT_ROOT)/third_party/fs/lib/libntfs_ext.a $(PROJECT_ROOT)/third_party/fs/lib/libfatfs.a \
