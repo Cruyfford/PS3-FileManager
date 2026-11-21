@@ -2632,9 +2632,11 @@ int main(void)
     if (ops_status()->state == OPS_RUNNING) { ops_cancel(); while (ops_status()->state == OPS_RUNNING) usleep(10000); }
     video_close();
     audio_stop();
-    ftp_stop();
-    loader_stop();
-    covers_shutdown();
+    /* exiting: background workers (FTP, covers, thumbnails) are told to stop but not waited for —
+     * a network request or a connected FTP client could otherwise hold the exit for many seconds */
+    ftp_stop_async();
+    covers_stop_async();
+    loader_stop();          /* local files only: finishes quickly */
     free_entries();
     vfs_shutdown();
     gfx_shutdown();

@@ -19,6 +19,7 @@
 
 static volatile int running, stop_req, client_on;
 static int listen_fd = -1;
+static volatile int active_ctrl = -1;
 static sys_ppu_thread_t thr;
 static char ip_str[32];
 static volume_t vols[24];
@@ -305,7 +306,9 @@ static void server_thread(void *arg)
         int c = accept(listen_fd, (struct sockaddr *)&ca, &cl);
         if (c < 0) { if (stop_req) break; usleep(100000); continue; }
         client_on = 1;
+        active_ctrl = c;
         session(c);
+        active_ctrl = -1;
         close(c);
         client_on = 0;
     }
@@ -350,6 +353,15 @@ int ftp_start(void)
     }
     last_err[0] = 0;
     return 1;
+}
+
+/* for app exit: unblock everything and return immediately (the process ends right after) */
+void ftp_stop_async(void)
+{
+    if (!running) return;
+    stop_req = 1;
+    if (active_ctrl >= 0) shutdown(active_ctrl, SHUT_RDWR);
+    if (listen_fd >= 0) { shutdown(listen_fd, SHUT_RDWR); close(listen_fd); listen_fd = -1; }
 }
 
 void ftp_stop(void)

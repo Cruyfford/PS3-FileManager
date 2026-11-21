@@ -16,3 +16,4 @@ int  covers_lookup(const char *full_path, const char *name, int is_dir, char *ou
 
 /* increments whenever a queued download finishes */
 int  covers_generation(void);
+void covers_stop_async(void);

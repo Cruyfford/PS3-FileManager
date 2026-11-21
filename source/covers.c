@@ -204,8 +204,13 @@ static size_t wr_cb(void *ptr, size_t sz, size_t nm, void *ud)
     return n;
 }
 
+static int abort_cb(void *u, double a, double b, double x, double y) { (void)u; (void)a; (void)b; (void)x; (void)y; return quit ? 1 : 0; }
+
 static int fetch_raw(CURL *c, const char *url, mem_t *m, int need_image)
 {
+    if (quit) return 0;
+    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(c, CURLOPT_PROGRESSFUNCTION, abort_cb);
     m->len = 0;
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, wr_cb);
@@ -527,6 +532,9 @@ void covers_init(const char *dir)
     quit = 0;
     started = sysThreadCreate(&thr, worker, NULL, 1700, 0x20000, THREAD_JOINABLE, "covers") == 0;
 }
+
+/* for app exit: abort the current download and don't wait for the worker */
+void covers_stop_async(void) { quit = 1; }
 
 void covers_shutdown(void)
 {
