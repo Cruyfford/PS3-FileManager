@@ -87,6 +87,7 @@ static uint8_t *es_buf; static int es_len, es_cap, es_scan;
 static int es_seen_pic, es_seen_slice;
 static ptsmark_t es_pts[64]; static int es_npts;
 
+static uint32_t ring_used(void);
 static uint64_t now_us(void) { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ULL + ns / 1000; }
 
 int video_supported(const char *n)
