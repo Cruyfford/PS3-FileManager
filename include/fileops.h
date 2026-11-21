@@ -1,0 +1,31 @@
+#pragma once
+#include <stdint.h>
+
+#define OPS_MAX_SRC 256
+
+enum { OP_COPY = 0, OP_MOVE, OP_DELETE, OP_EXTRACT, OP_BUILD };
+enum { OPS_IDLE = 0, OPS_RUNNING, OPS_DONE, OPS_ERROR, OPS_CANCELLED };
+enum { OPE_NONE = 0, OPE_SPACE, OPE_OPEN_SRC, OPE_OPEN_DST, OPE_READ, OPE_WRITE, OPE_MKDIR, OPE_DELETE, OPE_INTO_SELF, OPE_MEM };
+
+typedef struct {
+    volatile int state;
+    volatile int op;
+    volatile int error;
+    volatile uint64_t bytes_done, bytes_total;
+    volatile uint32_t files_done, files_total;
+    volatile uint32_t speed;
+    char current[256];
+    char error_path[512];
+} ops_status_t;
+
+/* srcs: full paths; dst_dir: destination folder (ignored for delete) */
+int  ops_start(int op, char srcs[][1024], int n, const char *dst_dir);
+/* PKG tools: extract pkg_path into out_dir/<CONTENT_ID>/ ; build folder into out_pkg */
+int  ops_start_extract(const char *pkg_path, const char *out_dir);
+int  ops_start_build(const char *folder, const char *out_pkg, const char *content_id);
+void ops_cancel(void);
+const ops_status_t *ops_status(void);
+void ops_reset(void);
+
+/* synchronous helpers (used by the installer thread) */
+uint64_t ops_now_ms(void);
