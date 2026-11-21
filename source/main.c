@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/systime.h>
+#include <sys/thread.h>
 #include <sysutil/sysutil.h>
 #include <lv2/process.h>
 #include <io/pad.h>
@@ -26,6 +27,7 @@
 #include "ftp.h"
 #include "archive.h"
 #include "arabic.h"
+#include "launcher.h"
 
 #define APP_DIR   "/dev_hdd0/game/CRPK00001/USRDIR"
 #define CFG_FILE  APP_DIR "/settings.cfg"
@@ -69,7 +71,9 @@ static void read_input(void)
     in_active = in_pressed;
     if (d && d == prev_down) {
         hold_frames++;
-        if (hold_frames > 18 && (hold_frames % 4) == 0) in_active = d & (B_UP | B_DOWN | B_LEFT | B_RIGHT | B_L2 | B_R2);
+        int rep_mask = d & (B_UP | B_DOWN | B_LEFT | B_RIGHT | B_L2 | B_R2);
+        if (hold_frames > 40) in_active = rep_mask;                                   /* fast scroll */
+        else if (hold_frames > 12 && (hold_frames % 2) == 0) in_active = rep_mask;
     } else hold_frames = 0;
     prev_down = d;
 }
@@ -256,6 +260,7 @@ typedef struct {
 static entry_t *ents;
 static vfs_entry_t *raw;
 static int ent_count, sel, scroll_top, list_err;
+static int dir_gen;
 static float sel_anim, scroll_anim;
 static char cwd[1024];
 static int focus_list = 1;
@@ -279,6 +284,7 @@ static void free_entries(void)
 static void open_dir(const char *path, const char *select_name)
 {
     free_entries();
+    dir_gen++;
     snprintf(cwd, sizeof(cwd), "%s", path);
     if (!strcmp(path, PACKAGES_DIR)) vfs_mkdir(PACKAGES_DIR);
     int n = vfs_list(cwd, raw, MAX_ENTRIES);
@@ -330,44 +336,96 @@ static int thumbable(const char *n)
     return e && (!strcasecmp(e, ".png") || !strcasecmp(e, ".jpg") || !strcasecmp(e, ".jpeg"));
 }
 
-/* parse one PKG / load one image thumbnail per frame near the cursor; drop textures far away */
+/* ---------- background loader: PKG info + thumbnails are read and decoded off the UI thread ---------- */
+static volatile int ld_state;          /* 0 idle, 1 job queued, 2 result ready */
+static struct { int gen, idx, is_img; uint64_t size; char name[256]; char path[1400]; texture_t tex; pkg_info_t info; } ld;
+static sys_ppu_thread_t ld_thr;
+static volatile int ld_quit;
+
+static void loader_thread(void *arg)
+{
+    (void)arg;
+    while (!ld_quit) {
+        if (ld_state != 1) { usleep(3000); continue; }
+        ld.tex = NULL;
+        memset(&ld.info, 0, sizeof(ld.info));
+        if (ld.is_img) {
+            if (ld.size > 0 && ld.size <= 8 * 1024 * 1024) {
+                vfs_file_t *f = vfs_open_read(ld.path);
+                if (f) {
+                    uint32_t sz = (uint32_t)ld.size, got = 0;
+                    uint8_t *b = (uint8_t *)malloc(sz);
+                    while (b && got < sz) { int64_t r = vfs_read(f, b + got, sz - got); if (r <= 0) break; got += (uint32_t)r; }
+                    vfs_close(f);
+                    if (b && got == sz) {
+                        texture_t t = (b[0] == 0x89 && b[1] == 'P') ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
+                        ld.tex = gfx_make_thumb(t, 128, 72);
+                    }
+                    free(b);
+                }
+            }
+        } else {
+            pkg_read_info(ld.path, &ld.info, 1);
+            if (ld.info.icon) ld.tex = gfx_make_thumb(gfx_load_png_buffer(ld.info.icon, ld.info.icon_size), 128, 72);
+        }
+        ld_state = 2;
+    }
+    sysThreadExit(0);
+}
+
+static void loader_start(void)
+{
+    ld_quit = 0;
+    sysThreadCreate(&ld_thr, loader_thread, NULL, 1600, 0x20000, THREAD_JOINABLE, "loader");
+}
+
+static void loader_stop(void)
+{
+    ld_quit = 1;
+    u64 rv;
+    sysThreadJoin(ld_thr, &rv);
+    if (ld_state == 2) { if (ld.tex) gfx_free_texture(ld.tex); pkg_free_info(&ld.info); }
+    ld_state = 0;
+}
+
 static void lazy_parse(void)
 {
-    for (int dist = 0; dist < 14; dist++) {
-        int c[2] = { sel + dist, sel - dist };
-        for (int k = 0; k < 2; k++) {
-            int i = c[k];
-            if (i < 0 || i >= ent_count) continue;
-            entry_t *e = &ents[i];
-            if (e->parsed) continue;
-            int img = e->type == FT_IMAGE && thumbable(e->name);
-            if (e->type != FT_PKG && !img) continue;
-            char full[1400];
-            path_join(full, sizeof(full), cwd, e->name);
-            if (img) {
-                e->parsed = 1;
-                if (e->size == 0 || e->size > 8 * 1024 * 1024) return;
-                vfs_file_t *f = vfs_open_read(full);
-                if (!f) return;
-                uint32_t sz = (uint32_t)e->size, got = 0;
-                uint8_t *b = (uint8_t *)malloc(sz);
-                while (b && got < sz) { int64_t r = vfs_read(f, b + got, sz - got); if (r <= 0) break; got += (uint32_t)r; }
-                vfs_close(f);
-                if (b && got == sz) {
-                    texture_t t = (b[0] == 0x89 && b[1] == 'P') ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
-                    e->icon = gfx_make_thumb(t, 128, 72);
-                }
-                free(b);
-                return;
-            }
-            pkg_read_info(full, &e->info, 1);
-            if (e->info.icon) e->icon = gfx_make_thumb(gfx_load_png_buffer(e->info.icon, e->info.icon_size), 128, 72);
+    /* 1. collect a finished result */
+    if (ld_state == 2) {
+        if (ld.gen == dir_gen && ld.idx < ent_count && !strcmp(ents[ld.idx].name, ld.name)) {
+            entry_t *e = &ents[ld.idx];
+            e->info = ld.info;
+            e->icon = ld.tex;
             e->parsed = 1;
-            return;
+        } else {
+            if (ld.tex) gfx_free_texture(ld.tex);
+            pkg_free_info(&ld.info);
+        }
+        ld_state = 0;
+    }
+    /* 2. queue the next item nearest to the cursor */
+    if (ld_state == 0) {
+        for (int dist = 0; dist < 14 && ld_state == 0; dist++) {
+            int c[2] = { sel + dist, sel - dist };
+            for (int k = 0; k < 2; k++) {
+                int i = c[k];
+                if (i < 0 || i >= ent_count) continue;
+                entry_t *e = &ents[i];
+                if (e->parsed) continue;
+                int img = e->type == FT_IMAGE && thumbable(e->name);
+                if (e->type != FT_PKG && !img) continue;
+                e->parsed = 2;   /* pending */
+                ld.gen = dir_gen; ld.idx = i; ld.is_img = img; ld.size = e->size;
+                snprintf(ld.name, sizeof(ld.name), "%s", e->name);
+                path_join(ld.path, sizeof(ld.path), cwd, e->name);
+                ld_state = 1;
+                break;
+            }
         }
     }
+    /* 3. drop textures far from the cursor */
     for (int i = 0; i < ent_count; i++)
-        if (ents[i].parsed && abs(i - sel) > 40) {
+        if (ents[i].parsed == 1 && abs(i - sel) > 40) {
             if (ents[i].icon) gfx_free_texture(ents[i].icon);
             ents[i].icon = NULL; ents[i].parsed = 0; pkg_free_info(&ents[i].info);
         }
@@ -379,7 +437,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -391,6 +449,9 @@ static sfo_field_t sfo_fields[SFO_MAX_FIELDS];
 static int sfo_count, sfo_sel;
 static char sfo_path[1400];
 static char ops_output[1400];
+static int launch_sys;
+static char launch_core[1400], launch_core_name[64], launch_src[1400];
+static char pending_self[1400], pending_arg[1400];
 static char osk_old[256];
 
 static void show_toast(const char *s) { snprintf(toast, sizeof(toast), "%s", s); toast_until = gfx_frame() + 150; }
@@ -420,12 +481,13 @@ static void draw_background(float t)
     gfx_glow(690 + cosf(t * 0.15f) * 80, 380 + sinf(t * 0.19f) * 50, 320, RGBA8(140, 50, 255, 60));
     gfx_glow(470 + sinf(t * 0.11f) * 160, 40 + cosf(t * 0.13f) * 30, 220, RGBA8(0, 200, 255, 32));
     for (int w = 0; w < 3; w++) {
-        float py = 0;
-        for (int x = 0; x <= SCR_W; x += 16) {
-            float y = 330 + w * 26 + sinf(x * 0.008f + t * (0.4f + w * 0.15f) + w) * 22;
-            if (x) gfx_line(x - 16, py, x, y, 1.2f, RGBA8(140, 160, 255, 16));
-            py = y;
+        float xy[2 * 56];
+        int n = 0;
+        for (int x = 0; x <= SCR_W + 16 && n < 56; x += 16, n++) {
+            xy[n * 2] = x;
+            xy[n * 2 + 1] = 330 + w * 26 + sinf(x * 0.008f + t * (0.4f + w * 0.15f) + w) * 22;
         }
+        gfx_polyline(xy, n, 1.2f, RGBA8(140, 160, 255, 16));
     }
 }
 
@@ -573,8 +635,8 @@ static void draw_list(void)
     } else {
         if (sel < scroll_top) scroll_top = sel;
         if (sel >= scroll_top + visible) scroll_top = sel - visible + 1;
-        scroll_anim = approach(scroll_anim, scroll_top, 0.25f);
-        sel_anim = approach(sel_anim, sel, 0.35f);
+        scroll_anim = approach(scroll_anim, scroll_top, 0.45f);
+        sel_anim = approach(sel_anim, sel, 0.55f);
 
         float hy = ly + (sel_anim - scroll_anim) * (row_h + gap);
         if (hy > ly - row_h && hy < ly + area_h) {
@@ -604,20 +666,20 @@ static void draw_list(void)
                 gfx_texture(e->icon, MX(ix, 60) + (60 - dw) / 2, ry + 5 + (33 - dh) / 2, dw, dh, RGBA8(255, 255, 255, 255));
                 gfx_rrect_border(MX(ix, 60) - 1, ry + 4, 62, 35, 4, 1, RGBA8(255, 255, 255, 60));
                 tx = ix + 72;
-            } else if (e->type == FT_IMAGE && thumbable(e->name) && !e->parsed) {
+            } else if (e->type == FT_IMAGE && thumbable(e->name) && e->parsed != 1) {
                 /* loading placeholder: pulsing tile */
                 int a = 40 + (int)(sinf(gfx_frame() * 0.15f) * 25);
                 gfx_rrect(MX(ix, 60), ry + 5, 60, 33, 4, RGBA8(255, 255, 255, a));
                 tx = ix + 72;
             } else draw_file_icon(ix, ry + 6, 30, e->type, e->name);
 
-            const char *title = (e->type == FT_PKG && e->parsed && e->info.title[0]) ? e->info.title : e->name;
+            const char *title = (e->type == FT_PKG && e->parsed == 1 && e->info.title[0]) ? e->info.title : e->name;
             float tw = w - (tx - x) - 150;
             L_text_fit(tx, ry + 6, tw, title, 14, 1, C_TEXT, ALIGN_LEFT);
 
             char line2[200];
             if (e->is_dir) snprintf(line2, sizeof(line2), "%s", T(S_FOLDER_TYPE));
-            else if (e->type == FT_PKG && e->parsed && e->info.title[0])
+            else if (e->type == FT_PKG && e->parsed == 1 && e->info.title[0])
                 snprintf(line2, sizeof(line2), "%s  \xC2\xB7  %s%s%s", e->name, e->info.title_id, e->info.version[0] ? "  v" : "", e->info.version);
             else snprintf(line2, sizeof(line2), "%s", ext_of(e->name)[0] ? ext_of(e->name) : T(S_FILE_TYPE));
             L_text_fit(tx, ry + 25, tw, line2, 10, 0, on ? RGBA8(220, 225, 255, 255) : C_DIM, ALIGN_LEFT);
@@ -634,7 +696,7 @@ static void draw_list(void)
                 char sz[32];
                 fmt_size(e->size, sz, sizeof(sz));
                 L_text(bx, ry + 7, sz, 12, 1, on ? C_TEXT : C_DIM, ALIGN_RIGHT);
-                if (e->type == FT_PKG && e->parsed) {
+                if (e->type == FT_PKG && e->parsed == 1) {
                     const char *tl = pkg_type_label(e->info.content_type);
                     const char *drm = !e->info.retail ? T(S_DEBUG) : e->info.drm_type == 3 ? T(S_FREE_DRM) :
                                       (e->info.drm_type == 1 || e->info.drm_type == 2) ? T(S_NEEDS_RAP) : NULL;
@@ -1041,9 +1103,9 @@ static void draw_props(void)
     } else {
         fmt_size(e->size, sz, sizeof(sz));
         rows[n][0] = T(S_SIZE); rows[n][1] = sz; n++;
-        snprintf(tbuf, sizeof(tbuf), "%s", e->type == FT_PKG && e->parsed ? pkg_type_label(e->info.content_type) : (ext_of(e->name)[0] ? ext_of(e->name) : T(S_FILE_TYPE)));
+        snprintf(tbuf, sizeof(tbuf), "%s", e->type == FT_PKG && e->parsed == 1 ? pkg_type_label(e->info.content_type) : (ext_of(e->name)[0] ? ext_of(e->name) : T(S_FILE_TYPE)));
         rows[n][0] = T(S_TYPE); rows[n][1] = tbuf; n++;
-        if (e->type == FT_PKG && e->parsed) {
+        if (e->type == FT_PKG && e->parsed == 1) {
             rows[n][0] = "Content ID"; rows[n][1] = e->info.content_id; n++;
             if (e->info.title[0]) { snprintf(cnt, sizeof(cnt), "%s  v%s", e->info.title_id, e->info.version); rows[n][0] = "Title ID"; rows[n][1] = cnt; n++; }
         }
@@ -1510,6 +1572,47 @@ static void open_props(void)
     open_modal(UI_PROPS);
 }
 
+static void ask_launch(int idx)
+{
+    entry_t *e = &ents[idx];
+    launch_sys = launch_kind(e->name);
+    path_join(launch_src, sizeof(launch_src), cwd, e->name);
+    if (launch_sys != SYS_SELF) {
+        char m[128];
+        if (!launch_retroarch_installed()) { snprintf(m, sizeof(m), T(S_NO_RA), launch_system_name(launch_sys)); show_toast(m); return; }
+        if (!launch_find_core(launch_sys, launch_core, sizeof(launch_core), launch_core_name, sizeof(launch_core_name))) {
+            snprintf(m, sizeof(m), T(S_NO_CORE), launch_system_name(launch_sys)); show_toast(m); return;
+        }
+    }
+    confirm_sel = 0;
+    open_modal(UI_CONFIRM_LAUNCH);
+}
+
+static void draw_confirm_launch(void)
+{
+    float x, y, w = 480, h = 240;
+    draw_modal_frame(w, h, &x, &y);
+    const char *bn = strrchr(launch_src, '/');
+    bn = bn ? bn + 1 : launch_src;
+    gfx_text(SCR_W / 2, y + 22, launch_sys == SYS_SELF ? T(S_LAUNCH_Q) : T(S_PLAY_GAME), 20, 1, C_TEXT, ALIGN_CENTER);
+    draw_file_icon(MXP(SCR_W / 2) - (RTL() ? -28 : 28), y + 60, 56, launch_sys == SYS_SELF ? FT_SYSTEM : FT_DISC, bn);
+    gfx_text_fit(SCR_W / 2, y + 126, w - 60, bn, 14, 1, C_TEXT, ALIGN_CENTER);
+    if (launch_sys != SYS_SELF) {
+        char m[160]; snprintf(m, sizeof(m), T(S_PLAY_WITH), launch_core_name);
+        gfx_text_fit(SCR_W / 2, y + 150, w - 60, m, 11, 0, C_DIM, ALIGN_CENTER);
+    }
+    draw_button_row(SCR_W / 2, y + h - 56, T(S_LAUNCH), T(S_CANCEL), confirm_sel, C_OKC);
+}
+
+static void do_launch(void)
+{
+    char native[1400];
+    if (!launch_prepare(launch_src, native, sizeof(native))) { show_toast(T(S_LAUNCH_FAIL)); ui = UI_BROWSE; return; }
+    if (launch_sys == SYS_SELF) { snprintf(pending_self, sizeof(pending_self), "%s", native); pending_arg[0] = 0; }
+    else { snprintf(pending_self, sizeof(pending_self), "%s", launch_core); snprintf(pending_arg, sizeof(pending_arg), "%s", native); }
+    quit_req = 1;
+}
+
 /* open a file with the right viewer */
 static void open_entry(int idx)
 {
@@ -1555,9 +1658,9 @@ static void start_install(void)
         memset(j, 0, sizeof(*j));
         path_join(j->path, sizeof(j->path), cwd, e->name);
         snprintf(j->name, sizeof(j->name), "%s", e->name);
-        snprintf(j->title, sizeof(j->title), "%s", e->parsed && e->info.title[0] ? e->info.title : e->name);
+        snprintf(j->title, sizeof(j->title), "%s", e->parsed == 1 && e->info.title[0] ? e->info.title : e->name);
         j->size = e->size;
-        if (e->parsed && e->info.icon && e->info.icon_size) {
+        if (e->parsed == 1 && e->info.icon && e->info.icon_size) {
             j->icon = malloc(e->info.icon_size);
             if (j->icon) { memcpy(j->icon, e->info.icon, e->info.icon_size); j->icon_size = e->info.icon_size; }
         }
@@ -1693,6 +1796,7 @@ static void handle_browse(void)
         else if (e->type == FT_PKG) { confirm_sel = 0; open_modal(UI_CONFIRM_INSTALL); }
         else if (!strcasecmp(e->name, "PARAM.SFO")) run_menu_action(M_EDITSFO);
         else if (archive_kind(e->name) != ARC_NONE && cur_writable()) run_menu_action(M_EXTRACT_ARC);
+        else if (launch_kind(e->name) != SYS_NONE) ask_launch(sel);
         else open_entry(sel);
     }
 }
@@ -1785,6 +1889,7 @@ int main(void)
     ya2d_paddata[0].ANA_L_H = 0x80;
     ya2d_paddata[0].ANA_L_V = 0x80;
     ents = calloc(MAX_ENTRIES, sizeof(entry_t));
+    loader_start();
     raw = calloc(MAX_ENTRIES, sizeof(vfs_entry_t));
     clip = calloc(OPS_MAX_SRC, 1024);
 
@@ -1867,6 +1972,16 @@ int main(void)
             break;
         case UI_PROPS: if (in_pressed & (B_OK | B_CANCEL)) ui = UI_BROWSE; break;
         case UI_IMAGE: handle_image(); break;
+        case UI_CONFIRM_LAUNCH: {
+            uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
+            if (in_pressed & (L | R)) confirm_sel = !confirm_sel;
+            if (in_pressed & B_CANCEL) ui = UI_BROWSE;
+            else if (in_pressed & B_OK) { if (confirm_sel == 0) { ui = UI_LAUNCHING; scan_frames = 0; } else ui = UI_BROWSE; }
+            break;
+        }
+        case UI_LAUNCHING:
+            if (++scan_frames >= 3) { scan_frames = 0; do_launch(); }
+            break;
         case UI_AUDIO: handle_audio(); break;
         case UI_TEXT: handle_text(); break;
         case UI_HEX: handle_hex(); break;
@@ -1896,7 +2011,8 @@ int main(void)
             if (focus_list && ent_count) {
                 entry_t *e = &ents[sel];
                 int lbl = e->is_dir ? S_OPEN : e->type == FT_PKG ? S_INSTALL : (e->type == FT_IMAGE || e->type == FT_TEXT) ? S_VIEW :
-                          audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC : S_PROPS;
+                          audio_is_supported(e->name) ? S_PLAY : archive_kind(e->name) != ARC_NONE ? S_EXTRACT_ARC :
+                          launch_kind(e->name) == SYS_SELF ? S_LAUNCH : launch_kind(e->name) != SYS_NONE ? S_PLAY : S_PROPS;
                 h[n++] = (hint_t){ ok_icon, lbl };
             }
             h[n++] = (hint_t){ cancel_icon, S_BACK };
@@ -1933,6 +2049,8 @@ int main(void)
             case UI_RESULT_OPS: draw_result_ops(); break;
             case UI_PROPS: draw_props(); break;
             case UI_SFO: draw_sfo(); break;
+            case UI_CONFIRM_LAUNCH: draw_confirm_launch(); break;
+            case UI_LAUNCHING: { float x2, y2; draw_modal_frame(360, 110, &x2, &y2); gfx_text(SCR_W / 2, y2 + 44, T(S_PREPARING), 15, 1, C_TEXT, ALIGN_CENTER); break; }
             case UI_OSK: if (osk_purpose == 2) draw_sfo(); break;
             case UI_SETTINGS: draw_settings(); break;
             case UI_SCANNING: draw_scanning(); break;
@@ -1945,9 +2063,11 @@ int main(void)
     if (ops_status()->state == OPS_RUNNING) { ops_cancel(); while (ops_status()->state == OPS_RUNNING) usleep(10000); }
     audio_stop();
     ftp_stop();
+    loader_stop();
     free_entries();
     vfs_shutdown();
     gfx_shutdown();
+    if (pending_self[0]) launch_exec(pending_self, pending_arg[0] ? pending_arg : NULL);
     sysProcessExit(0);
     return 0;
 }

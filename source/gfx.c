@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/mutex.h>
 
 #define GLYPH_SLOT   64
 #define GLYPH_SLOTS  384
@@ -29,6 +30,10 @@ static glyph_t glyphs[GLYPH_SLOTS];
 static int16_t hash_tab[HASH_SIZE];
 static uint64_t frame_no = 1;
 static float zc;
+static sys_mutex_t tex_lock;
+static int tex_lock_ok;
+static void TL(void) { if (tex_lock_ok) sysMutexLock(tex_lock, 0); }
+static void TU(void) { if (tex_lock_ok) sysMutexUnlock(tex_lock); }
 
 uint64_t gfx_frame(void) { return frame_no; }
 
@@ -37,6 +42,16 @@ static inline float Z(void) { zc -= 0.5f; if (zc < 1.0f) zc = 1.0f; return zc; }
 int gfx_init(const char *font_regular, const char *font_bold)
 {
     ya2d_init();
+    {
+        sys_mutex_attr_t a;
+        memset(&a, 0, sizeof(a));
+        a.attr_protocol = SYS_MUTEX_PROTOCOL_FIFO;
+        a.attr_recursive = SYS_MUTEX_ATTR_RECURSIVE;
+        a.attr_pshared = SYS_MUTEX_ATTR_NOT_PSHARED;
+        a.attr_adaptive = SYS_MUTEX_ATTR_ADAPTIVE;
+        strcpy(a.name, "texlock");
+        tex_lock_ok = sysMutexCreate(&tex_lock, &a) == 0;
+    }
     ya2d_screenSetClearColor(RGBA8(10, 10, 20, 255));
 
     /* carve glyph slots out of ya2d's static texture area, 128-byte aligned */
@@ -233,6 +248,23 @@ void gfx_line(float x1, float y1, float x2, float y2, float t, uint32_t c)
     tiny3d_End();
 }
 
+void gfx_polyline(const float *xy, int n, float t, uint32_t c)
+{
+    if (n < 2) return;
+    float z = Z(), h = t * 0.5f;
+    tiny3d_SetPolygon(TINY3D_TRIANGLE_STRIP);
+    for (int i = 0; i < n; i++) {
+        int a = i > 0 ? i - 1 : i, b = i < n - 1 ? i + 1 : i;
+        float dx = xy[b * 2] - xy[a * 2], dy = xy[b * 2 + 1] - xy[a * 2 + 1];
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len < 0.001f) len = 1;
+        float nx = -dy / len * h, ny = dx / len * h;
+        tiny3d_VertexPos(xy[i * 2] + nx, xy[i * 2 + 1] + ny, z); tiny3d_VertexColor(c);
+        tiny3d_VertexPos(xy[i * 2] - nx, xy[i * 2 + 1] - ny, z); tiny3d_VertexColor(c);
+    }
+    tiny3d_End();
+}
+
 void gfx_triangle(float x1, float y1, float x2, float y2, float x3, float y3, uint32_t c)
 {
     float z = Z();
@@ -248,13 +280,15 @@ void gfx_triangle(float x1, float y1, float x2, float y2, float x3, float y3, ui
 texture_t gfx_load_png_buffer(const void *buf, uint32_t size)
 {
     if (!buf || size < 8) return NULL;
-    return ya2d_loadPNGfromBuffer(buf, size);
+    TL(); texture_t t = ya2d_loadPNGfromBuffer(buf, size); TU();
+    return t;
 }
 
 texture_t gfx_load_jpg_buffer(const void *buf, uint32_t size)
 {
     if (!buf || size < 4) return NULL;
-    return ya2d_loadJPGfromBuffer(buf, size);
+    TL(); texture_t t = ya2d_loadJPGfromBuffer(buf, size); TU();
+    return t;
 }
 
 int gfx_texture_size(texture_t t, int *w, int *h)
@@ -274,7 +308,7 @@ texture_t gfx_make_thumb(texture_t src, int maxw, int maxh)
     int dw = (int)(sw * sc), dh = (int)(sh * sc);
     if (dw < 1) dw = 1;
     if (dh < 1) dh = 1;
-    texture_t t = ya2d_createTexture(dw, dh, TINY3D_TEX_FORMAT_A8R8G8B8);
+    TL(); texture_t t = ya2d_createTexture(dw, dh, TINY3D_TEX_FORMAT_A8R8G8B8); TU();
     if (!t) return src;
     const uint32_t *in = (const uint32_t *)src->data;
     uint32_t *out = (uint32_t *)t->data;
@@ -296,7 +330,7 @@ texture_t gfx_make_thumb(texture_t src, int maxw, int maxh)
             out[y * dpitch + x] = r;
         }
     }
-    ya2d_freeTexture(src);
+    TL(); ya2d_freeTexture(src); TU();
     return t;
 }
 
@@ -320,7 +354,7 @@ void gfx_texture(texture_t t, float x, float y, float w, float h, uint32_t tint)
 
 void gfx_free_texture(texture_t t)
 {
-    if (t) ya2d_freeTexture(t);
+    if (t) { TL(); ya2d_freeTexture(t); TU(); }
 }
 
 /* ---------------- text ---------------- */

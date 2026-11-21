@@ -151,6 +151,14 @@ static const char *en[S_COUNT] = {
     [S_LINE] = "Line",
     [S_OFFSET] = "Offset",
     [S_READONLY_FILE] = "Read-only drive: can't save",
+    [S_LAUNCH] = "Launch",
+    [S_LAUNCH_Q] = "Launch this program?",
+    [S_PLAY_WITH] = "Play with RetroArch (%s)",
+    [S_NO_CORE] = "No RetroArch core found for %s",
+    [S_NO_RA] = "Install RetroArch to play %s games",
+    [S_PREPARING] = "Preparing...",
+    [S_PLAY_GAME] = "Play game?",
+    [S_LAUNCH_FAIL] = "Couldn't prepare the file",
 };
 
 static const char *ar[S_COUNT] = {
@@ -302,6 +310,14 @@ static const char *ar[S_COUNT] = {
     [S_LINE] = "سطر",
     [S_OFFSET] = "الإزاحة",
     [S_READONLY_FILE] = "القرص للقراءة فقط: لا يمكن الحفظ",
+    [S_LAUNCH] = "تشغيل",
+    [S_LAUNCH_Q] = "تشغيل هذا البرنامج؟",
+    [S_PLAY_WITH] = "تشغيل عبر RetroArch (%s)",
+    [S_NO_CORE] = "لا يوجد Core في RetroArch لـ %s",
+    [S_NO_RA] = "ثبّت RetroArch لتشغيل ألعاب %s",
+    [S_PREPARING] = "جارٍ التجهيز...",
+    [S_PLAY_GAME] = "تشغيل اللعبة؟",
+    [S_LAUNCH_FAIL] = "تعذّر تجهيز الملف",
 };
 
 const char *T(int id)

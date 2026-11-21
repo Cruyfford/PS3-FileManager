@@ -26,6 +26,7 @@ void gfx_rrect_border(float x, float y, float w, float h, float r, float t, uint
 void gfx_circle(float cx, float cy, float r, uint32_t c);
 void gfx_glow(float cx, float cy, float r, uint32_t center);
 void gfx_line(float x1, float y1, float x2, float y2, float t, uint32_t c);
+void gfx_polyline(const float *xy, int n, float t, uint32_t c);   /* one strip, xy = x0,y0,x1,y1... */
 void gfx_triangle(float x1, float y1, float x2, float y2, float x3, float y3, uint32_t c);
 
 texture_t gfx_load_png_buffer(const void *buf, uint32_t size);
