@@ -431,7 +431,8 @@ static void draw_header(void)
     snprintf(clk, sizeof(clk), "%02d:%02d", tmv ? tmv->tm_hour : 0, tmv ? tmv->tm_min : 0);
     float cw = L_text(824, 16, clk, 20, 1, C_TEXT, ALIGN_RIGHT);
     if (ftp_running()) {
-        char f[64]; snprintf(f, sizeof(f), "FTP  %s", ftp_ip());
+        char f[64];
+        if (ftp_port() == 21) snprintf(f, sizeof(f), "FTP  %s", ftp_ip()); else snprintf(f, sizeof(f), "FTP  %s:%d", ftp_ip(), ftp_port());
         float fw = gfx_text_width(f, 10, 1) + 20;
         L_rrect(824 - cw - 14 - fw, 18, fw, 20, 10, ftp_clients() ? RGBA8(60, 200, 140, 230) : RGBA8(64, 120, 255, 200));
         L_text(824 - cw - 14 - fw / 2, 21, f, 10, 1, C_TEXT, ALIGN_CENTER);
@@ -1047,7 +1048,10 @@ static void draw_settings(void)
     gfx_text(SCR_W / 2, y + 20, T(S_SETTINGS), 20, 1, C_TEXT, ALIGN_CENTER);
     const int labels[SET_ITEMS] = { S_SET_LANG, S_SET_MODE, S_SET_DELETE, S_FTP, S_SET_ABOUT, S_SET_EXIT };
     char ftpv[96];
-    if (ftp_running()) snprintf(ftpv, sizeof(ftpv), "%s  ftp://%s", T(S_ON), ftp_ip()); else snprintf(ftpv, sizeof(ftpv), "%s", T(S_OFF));
+    if (ftp_running()) {
+        if (ftp_port() == 21) snprintf(ftpv, sizeof(ftpv), "%s  ftp://%s", T(S_ON), ftp_ip());
+        else snprintf(ftpv, sizeof(ftpv), "%s  ftp://%s:%d", T(S_ON), ftp_ip(), ftp_port());
+    } else snprintf(ftpv, sizeof(ftpv), "%s", T(S_OFF));
     const char *vals[SET_ITEMS] = {
         T(S_LANG_NAME), cfg.mode == MODE_XMB_QUEUE ? T(S_MODE_XMB) : T(S_MODE_PKGS),
         cfg.del ? T(S_DELETE) : T(S_KEEP), ftpv, T(S_ABOUT_TXT), NULL
@@ -1086,9 +1090,10 @@ static void draw_toast(void)
     float left = (float)(toast_until - gfx_frame());
     int a = left < 20 ? (int)(left / 20 * 255) : 255;
     float tw = gfx_text_width(toast, 13, 1) + 40;
-    gfx_rrect(SCR_W / 2 - tw / 2, 60, tw, 32, 16, RGBA8(30, 34, 70, a * 230 / 255));
-    gfx_rrect_border(SCR_W / 2 - tw / 2, 60, tw, 32, 16, 1, RGBA8(255, 255, 255, a / 4));
-    gfx_text(SCR_W / 2, 68, toast, 13, 1, WITH_ALPHA(C_TEXT, a), ALIGN_CENTER);
+    float ty = 408;
+    gfx_rrect(SCR_W / 2 - tw / 2, ty, tw, 32, 16, RGBA8(30, 34, 70, a * 240 / 255));
+    gfx_rrect_border(SCR_W / 2 - tw / 2, ty, tw, 32, 16, 1, RGBA8(255, 255, 255, a / 4));
+    gfx_text(SCR_W / 2, ty + 8, toast, 13, 1, WITH_ALPHA(C_TEXT, a), ALIGN_CENTER);
 }
 
 static void refresh_keep_wrapper(void);
@@ -1667,7 +1672,12 @@ static void handle_settings(void)
         else if (set_sel == 2) { cfg.del = !cfg.del; save_settings(); }
         else if (set_sel == 3) {
             cfg.ftp = !cfg.ftp; save_settings();
-            if (cfg.ftp) { if (!ftp_start()) { show_toast(T(S_FTP_FAIL)); cfg.ftp = 0; save_settings(); } }
+            if (cfg.ftp) {
+                if (!ftp_start()) {
+                    char m[160]; snprintf(m, sizeof(m), "%s  [%s]", T(S_FTP_FAIL), ftp_error());
+                    show_toast(m); cfg.ftp = 0; save_settings();
+                }
+            }
             else ftp_stop();
         }
         else if (set_sel == 5 && (in_pressed & B_OK)) quit_req = 1;

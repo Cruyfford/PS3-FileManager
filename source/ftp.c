@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/thread.h>
+#include <sysmodule/sysmodule.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -23,6 +24,11 @@ static char ip_str[32];
 static volume_t vols[24];
 static volatile int vol_n;
 static int net_ready;
+static int ftp_port_num = 21;
+static char last_err[64];
+
+int ftp_port(void) { return ftp_port_num; }
+const char *ftp_error(void) { return last_err; }
 
 void ftp_set_volumes(const volume_t *v, int n)
 {
@@ -305,18 +311,38 @@ static void refresh_ip(void)
 int ftp_start(void)
 {
     if (running) return 1;
-    if (!net_ready) { netInitialize(); netCtlInit(); net_ready = 1; }
+    last_err[0] = 0;
+    if (!net_ready) {
+        sysModuleLoad(SYSMODULE_NET);
+        sysModuleLoad(SYSMODULE_NETCTL);
+        int r = netInitialize();
+        if (r < 0) { snprintf(last_err, sizeof(last_err), "netInitialize %d", r); return 0; }
+        netCtlInit();
+        net_ready = 1;
+    }
     refresh_ip();
-    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (!ip_str[0]) { snprintf(last_err, sizeof(last_err), "no IP"); }
+
+    const int ports[] = { 21, 2121, 2221 };
+    for (unsigned i = 0; i < sizeof(ports) / sizeof(ports[0]); i++) {
+        listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (listen_fd < 0) { snprintf(last_err, sizeof(last_err), "socket %d/%d", listen_fd, net_errno); return 0; }
+        int one = 1;
+        setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET; a.sin_port = htons(ports[i]); a.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(listen_fd, (struct sockaddr *)&a, sizeof(a)) == 0 && listen(listen_fd, 2) == 0) { ftp_port_num = ports[i]; break; }
+        snprintf(last_err, sizeof(last_err), "bind %d: %d", ports[i], net_errno);
+        close(listen_fd); listen_fd = -1;
+    }
     if (listen_fd < 0) return 0;
-    int one = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof(a));
-    a.sin_family = AF_INET; a.sin_port = htons(FTP_PORT); a.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(listen_fd, (struct sockaddr *)&a, sizeof(a)) != 0 || listen(listen_fd, 2) != 0) { close(listen_fd); listen_fd = -1; return 0; }
     stop_req = 0; running = 1;
-    if (sysThreadCreate(&thr, server_thread, NULL, 1300, 0x20000, THREAD_JOINABLE, "ftpd") != 0) { running = 0; close(listen_fd); listen_fd = -1; return 0; }
+    if (sysThreadCreate(&thr, server_thread, NULL, 1300, 0x20000, THREAD_JOINABLE, "ftpd") != 0) {
+        snprintf(last_err, sizeof(last_err), "thread");
+        running = 0; close(listen_fd); listen_fd = -1; return 0;
+    }
+    last_err[0] = 0;
     return 1;
 }
 
