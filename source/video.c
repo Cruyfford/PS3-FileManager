@@ -11,6 +11,7 @@
 #include "gfx.h"
 #include "audio.h"
 #include <codec/vdec.h>
+#include <ppu-asm.h>
 #include <audio/audio.h>
 #include <sysmodule/sysmodule.h>
 #include <sys/thread.h>
@@ -143,7 +144,8 @@ static int vdec_start(int codec)
     vmem = memalign(1024 * 1024, attr.mem_size);
     if (!vmem) return 0;
     vdecConfig cfg = { (u32)(u64)vmem, attr.mem_size, 1000, 0x8000, 250, 1 };
-    vdecClosure cl = { (u32)(u64)vdec_cb, 0 };
+    /* the decoder PRX calls back through a 32-bit function descriptor */
+    vdecClosure cl = { (u32)__get_opd32(vdec_cb), 0 };
     if (vdecOpen(&type, &cfg, &cl, &vh) != 0) { vh = 0; return 0; }
     if (vdecStartSequence(vh) != 0) return 0;
     for (int i = 0; i < AU_SLOTS; i++) if (!(au_buf[i] = (uint8_t *)memalign(128, AU_MAX))) return 0;
@@ -680,7 +682,7 @@ static void fetch_pictures(void)
 {
     if (paused || !vh || !vs) return;
     double now = video_position();
-    for (int guard = 0; guard < 4 && pics_ready > 0; guard++) {
+    for (int guard = 0; guard < 4; guard++) {
         u32 addr = 0;
         if (vdecGetPicItem(vh, &addr) != 0 || !addr) break;
         vdecPicture *pic = (vdecPicture *)(u64)addr;
@@ -699,11 +701,11 @@ static void fetch_pictures(void)
         pic_dims(pic, &w, &h);
         vdecPictureFormat fmt = { VDEC_PICFMT_YUV420P, h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601, 0xFF };
         if (vdecGetPicture(vh, &fmt, frame) != 0) break;
-        pics_ready--;
+        if (pics_ready > 0) pics_ready--;
         out_count++;
         last_pic_pts = pts;
         if (w <= 0 || h <= 0 || w > 1920 || h > 1088) continue;
-        if (pts < now - 0.080 && pics_ready > 0) continue;
+        if (pts < now - 0.080 && pics_ready > 1) continue;
         ensure_textures(w, h);
         int b = (cur_tex + 1) & 1;
         if (!tex[b][0] || !tex[b][1] || !tex[b][2]) break;
