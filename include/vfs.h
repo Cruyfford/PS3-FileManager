@@ -43,6 +43,11 @@ uint64_t vfs_free_space(const char *path);
 
 vfs_file_t *vfs_open_read(const char *path);
 vfs_file_t *vfs_open_write(const char *path);
+vfs_file_t *vfs_open_rw(const char *path);      /* existing file, no truncate */
+uint64_t vfs_size(vfs_file_t *f);
+
+/* bit n set = a USB mass-storage device is attached on port n (any file system) */
+int  vfs_usb_device_mask(void);
 int64_t vfs_read(vfs_file_t *f, void *buf, uint32_t len);
 int64_t vfs_write(vfs_file_t *f, const void *buf, uint32_t len);
 int  vfs_seek(vfs_file_t *f, uint64_t off);

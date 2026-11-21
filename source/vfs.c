@@ -12,6 +12,7 @@
 #include "ntfs.h"
 #include "ff.h"
 #include "fflib.h"
+#include "storage.h"
 #include "vfs.h"
 
 #define USB_MASS_STORAGE_1(n) (0x10300000000000AULL + (n))
@@ -285,19 +286,20 @@ uint64_t vfs_free_space(const char *path)
 
 static vfs_file_t *open_any(const char *path, int write)
 {
+    /* write: 0 read, 1 create/truncate, 2 read-write existing */
     vfs_file_t *f = (vfs_file_t *)calloc(1, sizeof(vfs_file_t));
     if (!f) return NULL;
     f->be = vfs_backend(path);
     int ok = 0;
     if (f->be == VFS_NATIVE) {
-        s32 flags = write ? (SYS_O_WRONLY | SYS_O_CREAT | SYS_O_TRUNC) : SYS_O_RDONLY;
+        s32 flags = write == 1 ? (SYS_O_WRONLY | SYS_O_CREAT | SYS_O_TRUNC) : write == 2 ? SYS_O_RDWR : SYS_O_RDONLY;
         ok = sysFsOpen(path, flags, &f->fd, NULL, 0) == 0;
-        if (ok && write) sysFsChmod(path, 0666);
+        if (ok && write == 1) sysFsChmod(path, 0666);
     } else if (f->be == VFS_NTFS) {
-        f->fd = ps3ntfs_open(path, write ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0666);
+        f->fd = ps3ntfs_open(path, write == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : write == 2 ? O_RDWR : O_RDONLY, 0666);
         ok = f->fd >= 0;
     } else {
-        ok = f_open(&f->fil, path, write ? (FA_WRITE | FA_CREATE_ALWAYS) : FA_READ) == FR_OK;
+        ok = f_open(&f->fil, path, write == 1 ? (FA_WRITE | FA_CREATE_ALWAYS) : write == 2 ? (FA_READ | FA_WRITE) : FA_READ) == FR_OK;
     }
     if (!ok) { free(f); return NULL; }
     return f;
@@ -305,6 +307,23 @@ static vfs_file_t *open_any(const char *path, int write)
 
 vfs_file_t *vfs_open_read(const char *path)  { return open_any(path, 0); }
 vfs_file_t *vfs_open_write(const char *path) { return open_any(path, 1); }
+vfs_file_t *vfs_open_rw(const char *path)    { return open_any(path, 2); }
+
+uint64_t vfs_size(vfs_file_t *f)
+{
+    if (f->be == VFS_NATIVE) { sysFSStat sb; return sysFsFstat(f->fd, &sb) == 0 ? sb.st_size : 0; }
+    if (f->be == VFS_NTFS) { struct stat sb; return ps3ntfs_fstat(f->fd, &sb) == 0 ? (uint64_t)sb.st_size : 0; }
+    return (uint64_t)f_size(&f->fil);
+}
+
+int vfs_usb_device_mask(void)
+{
+    int m = 0;
+    device_info_t info;
+    for (int port = 0; port < 8; port++)
+        if (sys_storage_get_device_info(USB_MASS_STORAGE(port), &info) == 0) m |= 1 << port;
+    return m;
+}
 
 int64_t vfs_read(vfs_file_t *f, void *buf, uint32_t len)
 {

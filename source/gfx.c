@@ -251,6 +251,19 @@ texture_t gfx_load_png_buffer(const void *buf, uint32_t size)
     return ya2d_loadPNGfromBuffer(buf, size);
 }
 
+texture_t gfx_load_jpg_buffer(const void *buf, uint32_t size)
+{
+    if (!buf || size < 4) return NULL;
+    return ya2d_loadJPGfromBuffer(buf, size);
+}
+
+int gfx_texture_size(texture_t t, int *w, int *h)
+{
+    if (!t) return 0;
+    *w = t->imageWidth; *h = t->imageHeight;
+    return 1;
+}
+
 texture_t gfx_load_png_file(const char *path)
 {
     return ya2d_loadPNGfromFile(path);

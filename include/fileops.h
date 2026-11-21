@@ -3,7 +3,7 @@
 
 #define OPS_MAX_SRC 256
 
-enum { OP_COPY = 0, OP_MOVE, OP_DELETE, OP_EXTRACT, OP_BUILD };
+enum { OP_COPY = 0, OP_MOVE, OP_DELETE, OP_EXTRACT, OP_BUILD, OP_UNARCHIVE };
 enum { OPS_IDLE = 0, OPS_RUNNING, OPS_DONE, OPS_ERROR, OPS_CANCELLED };
 enum { OPE_NONE = 0, OPE_SPACE, OPE_OPEN_SRC, OPE_OPEN_DST, OPE_READ, OPE_WRITE, OPE_MKDIR, OPE_DELETE, OPE_INTO_SELF, OPE_MEM };
 
@@ -23,7 +23,13 @@ int  ops_start(int op, char srcs[][1024], int n, const char *dst_dir);
 /* PKG tools: extract pkg_path into out_dir/<CONTENT_ID>/ ; build folder into out_pkg */
 int  ops_start_extract(const char *pkg_path, const char *out_dir);
 int  ops_start_build(const char *folder, const char *out_pkg, const char *content_id);
+int  ops_start_unarchive(const char *archive, const char *dest_dir);
 void ops_cancel(void);
+
+/* background folder size for the Properties screen */
+void dirsize_start(const char *path);
+int  dirsize_done(void);
+void dirsize_result(uint64_t *bytes, uint32_t *files, uint32_t *dirs);
 const ops_status_t *ops_status(void);
 void ops_reset(void);
 

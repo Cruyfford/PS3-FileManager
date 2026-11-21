@@ -30,6 +30,8 @@ void gfx_triangle(float x1, float y1, float x2, float y2, float x3, float y3, ui
 
 texture_t gfx_load_png_buffer(const void *buf, uint32_t size);
 texture_t gfx_load_png_file(const char *path);
+texture_t gfx_load_jpg_buffer(const void *buf, uint32_t size);
+int gfx_texture_size(texture_t t, int *w, int *h);
 void gfx_texture(texture_t t, float x, float y, float w, float h, uint32_t tint);
 void gfx_free_texture(texture_t t);
 

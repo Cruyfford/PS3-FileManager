@@ -2,6 +2,7 @@
 #include "fileops.h"
 #include "vfs.h"
 #include "pkgtool.h"
+#include "archive.h"
 #include <sys/thread.h>
 #include <sys/systime.h>
 #include <stdio.h>
@@ -156,11 +157,46 @@ static void pt_cb(uint64_t add, const char *cur)
     if (add) tick(add);
 }
 
+static void pt_cb_fwd(uint64_t add, const char *cur) { pt_cb(add, cur); }
+
 static void worker(void *arg)
 {
     (void)arg;
     int err = OPE_NONE;
     last_t = ops_now_ms(); last_b = 0;
+
+    if (q_op == OP_UNARCHIVE) {
+        const char *tmp = "/dev_hdd0/tmp/fm_arc";
+        char nsrc[1024], ndst[1024];
+        int src_native = vfs_backend(q_src[0]) == VFS_NATIVE, dst_native = vfs_backend(q_dst) == VFS_NATIVE;
+        vfs_mkdir("/dev_hdd0/tmp");
+        vfs_mkdir(tmp);
+        buf = (uint8_t *)malloc(BUF_SIZE);
+        if (!buf) err = OPE_MEM;
+        if (!err && !src_native) {
+            uint64_t sz = 0; int d = 0;
+            vfs_stat(q_src[0], &d, &sz);
+            st.bytes_total = sz;
+            join(nsrc, sizeof(nsrc), tmp, base_name(q_src[0]));
+            err = copy_file(q_src[0], nsrc);
+            st.bytes_done = 0; last_b = 0;
+        } else snprintf(nsrc, sizeof(nsrc), "%s", q_src[0]);
+        if (dst_native) snprintf(ndst, sizeof(ndst), "%s", q_dst);
+        else { join(ndst, sizeof(ndst), tmp, "out"); delete_tree(ndst, 0); }
+        if (!err && !cancel_flag) err = archive_extract(nsrc, ndst, &cancel_flag, pt_cb_fwd, &st.bytes_total);
+        if (!err && !cancel_flag && !dst_native) {
+            st.bytes_done = 0; st.bytes_total = 0; st.files_total = 0; last_b = 0;
+            measure(ndst, 0);
+            err = copy_tree(ndst, q_dst, 0);
+        }
+        if (!dst_native) delete_tree(ndst, 0);
+        if (!src_native) vfs_unlink(nsrc);
+        free(buf); buf = NULL;
+        st.error = err;
+        st.state = cancel_flag ? OPS_CANCELLED : err ? OPS_ERROR : OPS_DONE;
+        sysThreadExit(0);
+        return;
+    }
 
     if (q_op == OP_EXTRACT || q_op == OP_BUILD) {
         if (q_op == OP_EXTRACT)
@@ -245,6 +281,41 @@ static int start_tool(int op, const char *src, const char *dst, const char *cid)
 
 int ops_start_extract(const char *pkg_path, const char *out_dir) { return start_tool(OP_EXTRACT, pkg_path, out_dir, NULL); }
 int ops_start_build(const char *folder, const char *out_pkg, const char *cid) { return start_tool(OP_BUILD, folder, out_pkg, cid); }
+int ops_start_unarchive(const char *arc, const char *dest) { return start_tool(OP_UNARCHIVE, arc, dest, NULL); }
+
+/* ---------- folder size ---------- */
+static volatile int ds_done = 1;
+static volatile uint64_t ds_bytes;
+static volatile uint32_t ds_files, ds_dirs;
+static char ds_path[1024];
+static sys_ppu_thread_t ds_thr;
+static int ds_alive;
+
+static void ds_walk(const char *path, int depth)
+{
+    vfs_entry_t *e = (vfs_entry_t *)malloc(sizeof(vfs_entry_t) * MAX_LIST);
+    if (!e) return;
+    int n = vfs_list(path, e, MAX_LIST);
+    char child[1024];
+    for (int i = 0; i < n; i++) {
+        if (e[i].is_dir) { ds_dirs++; if (depth < 32) { join(child, sizeof(child), path, e[i].name); ds_walk(child, depth + 1); } }
+        else { ds_files++; ds_bytes += e[i].size; }
+    }
+    free(e);
+}
+
+static void ds_thread(void *arg) { (void)arg; ds_walk(ds_path, 0); ds_done = 1; sysThreadExit(0); }
+
+void dirsize_start(const char *path)
+{
+    if (ds_alive) { u64 rv; sysThreadJoin(ds_thr, &rv); ds_alive = 0; }
+    snprintf(ds_path, sizeof(ds_path), "%s", path);
+    ds_bytes = 0; ds_files = 0; ds_dirs = 0; ds_done = 0;
+    if (sysThreadCreate(&ds_thr, ds_thread, NULL, 1500, 0x40000, THREAD_JOINABLE, "dirsize") == 0) ds_alive = 1;
+    else ds_done = 1;
+}
+int dirsize_done(void) { return ds_done; }
+void dirsize_result(uint64_t *b, uint32_t *f, uint32_t *d) { *b = ds_bytes; *f = ds_files; *d = ds_dirs; }
 
 void ops_cancel(void) { cancel_flag = 1; }
 const ops_status_t *ops_status(void) { return &st; }
