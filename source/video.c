@@ -90,6 +90,7 @@ static int es_seen_pic, es_seen_slice;
 static ptsmark_t es_pts[64]; static int es_npts;
 
 static uint32_t ring_used(void);
+static int use_yuv; static uint32_t last_gp_err, last_gp_err2;
 static volatile uint32_t vq_w, vq_r;
 static uint64_t now_us(void) { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ULL + ns / 1000; }
 
@@ -112,8 +113,8 @@ const char *video_format_info(void) { return fmt_info; }
 const char *video_debug_info(void)
 {
     static char b[160];
-    snprintf(b, sizeof(b), "t %.2f next %.2f  q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
-             video_position(), next_pic_pts, (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
+    snprintf(b, sizeof(b), "e %x/%x%s  t %.2f next %.2f  q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
+             (unsigned)last_gp_err, (unsigned)last_gp_err2, use_yuv ? " yuv" : "", video_position(), next_pic_pts, (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
              asi >= 0 && !audio_port_ok ? " (port off)" : "", (unsigned)(ring ? ring_used() : 0), frame_w, frame_h, demux_done);
     return b;
 }
@@ -165,7 +166,7 @@ static int vdec_start(int codec)
     if (vdecOpen(&type, &cfg, &cl, &vh) != 0) { vh = 0; return 0; }
     if (vdecStartSequence(vh) != 0) return 0;
     for (int i = 0; i < AU_SLOTS; i++) if (!(au_buf[i] = (uint8_t *)memalign(128, AU_MAX))) return 0;
-    frame_cap = 1920 * 1088 * 4;
+    frame_cap = 1920 * 1088 * 4 + 1920 * 1088 * 3 / 2 + 256;
     if (!(frame = (uint8_t *)memalign(128, frame_cap))) { frame_cap = 0; return 0; }
     return 1;
 }
@@ -761,6 +762,24 @@ static void pic_dims(vdecPicture *pic, int *w, int *h)
     *w &= ~1; *h &= ~1;
 }
 
+static int yuv_ok;
+
+/* BT.601-ish integer YUV420P -> ARGB (src and dst may not overlap) */
+static void yuv_to_argb(const uint8_t *src, uint8_t *dst, int w, int h)
+{
+    const uint8_t *Y = src, *U = src + w * h, *V = U + (w / 2) * (h / 2);
+    uint32_t *o = (uint32_t *)dst;
+    for (int y = 0; y < h; y++) {
+        const uint8_t *yr = Y + y * w, *ur = U + (y / 2) * (w / 2), *vr = V + (y / 2) * (w / 2);
+        for (int x = 0; x < w; x++) {
+            int c = (yr[x] - 16) * 298, d = ur[x >> 1] - 128, e = vr[x >> 1] - 128;
+            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * d - 208 * e + 128) >> 8, b = (c + 516 * d + 128) >> 8;
+            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+            *o++ = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 static void fetch_pictures(void)
 {
     if (paused || !vh || !vs) return;
@@ -785,8 +804,26 @@ static void fetch_pictures(void)
         if (pts > now + 0.010 && cur_tex >= 0 && !backed_up) break;
         int w, h;
         pic_dims(pic, &w, &h);
-        vdecPictureFormat fmt = { VDEC_PICFMT_ARGB32, h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601, 0xFF };
-        if (vdecGetPicture(vh, &fmt, frame) != 0) break;
+        u32 mtx = h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601;
+        int yuv = 0;
+        s32 gr = -1;
+        if (!use_yuv) { vdecPictureFormat fmt = { VDEC_PICFMT_ARGB32, mtx, 0xFF }; gr = vdecGetPicture(vh, &fmt, frame); }
+        if (gr != 0) {
+            if (!use_yuv) last_gp_err = (uint32_t)gr;
+            /* fall back to planar YUV and convert on the PPU */
+            vdecPictureFormat f2 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
+            s32 g2 = vdecGetPicture(vh, &f2, frame + (size_t)1920 * 1088 * 4);
+            if (g2 == 0) { yuv = 1; if (!use_yuv && ++yuv_ok > 3) use_yuv = 1; }
+            else {
+                last_gp_err2 = (uint32_t)g2;
+                vdecPictureFormat f3 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
+                if (vdecGetPicture(vh, &f3, NULL) != 0) break;   /* discard so the decoder can continue */
+                if (pics_ready > 0) pics_ready--;
+                out_count++; last_pic_pts = pts;
+                continue;
+            }
+        }
+        if (yuv) yuv_to_argb(frame + (size_t)1920 * 1088 * 4, frame, w, h);
         if (pics_ready > 0) pics_ready--;
         out_count++;
         last_pic_pts = pts;
