@@ -90,7 +90,7 @@ static int es_seen_pic, es_seen_slice;
 static ptsmark_t es_pts[64]; static int es_npts;
 
 static uint32_t ring_used(void);
-static int use_yuv; static uint32_t last_gp_err, last_gp_err2;
+static int use_yuv; static uint32_t last_gp_err, last_gp_err2, gpi_err, got_pics;
 static volatile uint32_t vq_w, vq_r;
 static uint64_t now_us(void) { u64 s, ns; sysGetCurrentTime(&s, &ns); return s * 1000000ULL + ns / 1000; }
 
@@ -113,8 +113,8 @@ const char *video_format_info(void) { return fmt_info; }
 const char *video_debug_info(void)
 {
     static char b[160];
-    snprintf(b, sizeof(b), "e %x/%x%s  t %.2f next %.2f  q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
-             (unsigned)last_gp_err, (unsigned)last_gp_err2, use_yuv ? " yuv" : "", video_position(), next_pic_pts, (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
+    snprintf(b, sizeof(b), "e %x/%x/%x got %u%s  t %.2f next %.2f  q %u  au %u/%u  pic %u  audio %s%s  ring %u  frame %dx%d  done %d",
+             (unsigned)last_gp_err, (unsigned)last_gp_err2, (unsigned)gpi_err, (unsigned)got_pics, use_yuv ? " yuv" : "", video_position(), next_pic_pts, (unsigned)(vq_w - vq_r), (unsigned)au_done, (unsigned)au_sent, (unsigned)pics_ready, asi < 0 ? "none" : audio_started ? "on" : "wait",
              asi >= 0 && !audio_port_ok ? " (port off)" : "", (unsigned)(ring ? ring_used() : 0), frame_w, frame_h, demux_done);
     return b;
 }
@@ -139,11 +139,12 @@ double video_position(void)
 
 /* ======================= vdec ======================= */
 
+static void pull_pictures(void);
 static u32 vdec_cb(u32 handle, u32 msg, u32 data, u32 arg)
 {
     (void)handle; (void)data; (void)arg;
     if (msg == VDEC_CALLBACK_AUDONE) au_done++;
-    else if (msg == VDEC_CALLBACK_PICOUT) pics_ready++;
+    else if (msg == VDEC_CALLBACK_PICOUT) { pics_ready++; pull_pictures(); }
     else if (msg == VDEC_CALLBACK_SEQDONE) seq_done = 1;
     return 0;
 }
@@ -303,6 +304,8 @@ static void vq_clear(void)
 static void vdec_end_and_drain(void)
 {
     if (!vh) return;
+    draining = 1;
+    if (pic_mtx_ok) { sysMutexLock(pic_mtx, 0); sysMutexUnlock(pic_mtx); }   /* wait out a pull in progress */
     seq_done = 0;
     vdecEndSequence(vh);
     vdecPictureFormat f = { VDEC_PICFMT_ARGB32, VDEC_COLOR_MATRIX_BT709, 0xFF };
@@ -314,6 +317,8 @@ static void vdec_end_and_drain(void)
     u32 a;
     while (vdecGetPicItem(vh, &a) == 0 && a && frame) vdecGetPicture(vh, &f, frame);
     pics_ready = 0;
+    pq_reset();
+    draining = 0;
 }
 
 /* ======================= ES splitter ======================= */
@@ -522,6 +527,7 @@ static void stop_threads(void)
 static void reset_pipeline_state(void)
 {
     au_sent = au_done = pics_ready = 0;
+    pq_reset();
     ring_w = ring_r = 0; played = 0; deficit = 0; next_pic_pts = -1;
     audio_started = 0; audio_base = 0;
     wall_started = 0; wall_pause_acc = 0;
@@ -614,6 +620,8 @@ int video_open(const char *path)
         at.attr_protocol = SYS_MUTEX_PROTOCOL_FIFO; at.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
         at.attr_pshared = SYS_MUTEX_ATTR_NOT_PSHARED; at.attr_adaptive = SYS_MUTEX_ATTR_NOT_ADAPTIVE;
         if (sysMutexCreate(&sub_mtx, &at) == 0) sub_mtx_ok = 1;
+        at.attr_recursive = SYS_MUTEX_ATTR_RECURSIVE;
+        if (sysMutexCreate(&pic_mtx, &at) == 0) pic_mtx_ok = 1;
     }
     dmx = demux_open(path);
     if (!dmx) { verr = vfs_exists(path) ? VERR_FORMAT : VERR_OPEN; st = VID_ERROR; return 0; }
@@ -676,6 +684,7 @@ void video_close(void)
     vs = NULL; vsi = asi = -1;
     free(ring); ring = NULL;
     free(frame); frame = NULL; frame_cap = 0;
+    pq_free();
     free(es_buf); es_buf = NULL; es_cap = 0; es_reset();
     lock_subs(); subs_free(&subs); unlock_subs();
     nsubopts = cursub = 0;
@@ -762,9 +771,18 @@ static void pic_dims(vdecPicture *pic, int *w, int *h)
     *w &= ~1; *h &= ~1;
 }
 
+/* Decoded pictures are pulled out of the decoder as soon as they're ready (also from the decoder's own
+ * PICOUT callback, as Movian does) into a small queue of ARGB frames; the main loop shows them on time.
+ * The decoder only has a fixed pool of frame buffers: leaving pictures inside it stalls decoding. */
+#define PQ 4
+typedef struct { uint8_t *buf; size_t cap; int w, h; double pts; } pq_t;
+static pq_t pq[PQ];
+static volatile uint32_t pq_w, pq_r;
+static sys_mutex_t pic_mtx; static int pic_mtx_ok;
+static volatile int draining;
 static int yuv_ok;
 
-/* BT.601-ish integer YUV420P -> ARGB (src and dst may not overlap) */
+/* BT.601-ish integer YUV420P -> ARGB */
 static void yuv_to_argb(const uint8_t *src, uint8_t *dst, int w, int h)
 {
     const uint8_t *Y = src, *U = src + w * h, *V = U + (w / 2) * (h / 2);
@@ -773,20 +791,21 @@ static void yuv_to_argb(const uint8_t *src, uint8_t *dst, int w, int h)
         const uint8_t *yr = Y + y * w, *ur = U + (y / 2) * (w / 2), *vr = V + (y / 2) * (w / 2);
         for (int x = 0; x < w; x++) {
             int c = (yr[x] - 16) * 298, d = ur[x >> 1] - 128, e = vr[x >> 1] - 128;
-            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * d - 208 * e + 128) >> 8, b = (c + 516 * d + 128) >> 8;
-            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
-            *o++ = 0xFF000000u | (r << 16) | (g << 8) | b;
+            int r = (c + 409 * e + 128) >> 8, g = (c - 100 * d - 208 * e + 128) >> 8, bb = (c + 516 * d + 128) >> 8;
+            r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; bb = bb < 0 ? 0 : bb > 255 ? 255 : bb;
+            *o++ = 0xFF000000u | (r << 16) | (g << 8) | bb;
         }
     }
 }
 
-static void fetch_pictures(void)
+static void pull_pictures(void)
 {
-    if (paused || !vh || !vs) return;
-    double now = video_position();
-    for (int guard = 0; guard < 4; guard++) {
+    if (!vh || !pic_mtx_ok || draining) return;
+    sysMutexLock(pic_mtx, 0);
+    while (pq_w - pq_r < PQ && !draining) {
         u32 addr = 0;
-        if (vdecGetPicItem(vh, &addr) != 0 || !addr) break;
+        s32 r = vdecGetPicItem(vh, &addr);
+        if (r != 0 || !addr) { if (r != 0 && r != (s32)VDEC_ERROR_EMPTY) gpi_err = (uint32_t)r; break; }
         vdecPicture *pic = (vdecPicture *)(u64)addr;
         double pts;
         if (dmx->frame_count_ts) {
@@ -795,48 +814,79 @@ static void fetch_pictures(void)
         } else if (pic->pts[0].low != VDEC_TS_INVALID || pic->pts[0].hi != VDEC_TS_INVALID) {
             uint64_t p90 = ((uint64_t)pic->pts[0].hi << 32) | pic->pts[0].low;
             pts = (double)p90 / 90000.0;
-            if (last_pic_pts >= 0) { double d = pts - last_pic_pts; if (d > 0.005 && d < 0.2 && d < frame_dur * 1.5 && d > frame_dur * 0.4) frame_dur = frame_dur * 0.9 + d * 0.1; }
         } else pts = last_pic_pts >= 0 ? last_pic_pts + frame_dur : (video_start_pts >= 0 ? video_start_pts : 0);
-        if (!wall_started) { wall_started = 1; wall_base = pts; wall_t0 = now_us(); wall_pause_acc = 0; if (paused) wall_pause_start = wall_t0; now = video_position(); }
-        next_pic_pts = pts;
-        /* never let a picture block the decoder for long: if the input queue backs up, show it anyway */
-        int backed_up = (vq_w - vq_r) > VQ * 3 / 4;
-        if (pts > now + 0.010 && cur_tex >= 0 && !backed_up) break;
         int w, h;
         pic_dims(pic, &w, &h);
         u32 mtx = h >= 720 ? VDEC_COLOR_MATRIX_BT709 : VDEC_COLOR_MATRIX_BT601;
-        int yuv = 0;
-        s32 gr = -1;
-        if (!use_yuv) { vdecPictureFormat fmt = { VDEC_PICFMT_ARGB32, mtx, 0xFF }; gr = vdecGetPicture(vh, &fmt, frame); }
-        if (gr != 0) {
-            if (!use_yuv) last_gp_err = (uint32_t)gr;
-            /* fall back to planar YUV and convert on the PPU */
-            vdecPictureFormat f2 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
-            s32 g2 = vdecGetPicture(vh, &f2, frame + (size_t)1920 * 1088 * 4);
-            if (g2 == 0) { yuv = 1; if (!use_yuv && ++yuv_ok > 3) use_yuv = 1; }
-            else {
-                last_gp_err2 = (uint32_t)g2;
-                vdecPictureFormat f3 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
-                if (vdecGetPicture(vh, &f3, NULL) != 0) break;   /* discard so the decoder can continue */
-                if (pics_ready > 0) pics_ready--;
-                out_count++; last_pic_pts = pts;
-                continue;
+        pq_t *e = &pq[pq_w % PQ];
+        size_t need = (size_t)w * h * 4 + (size_t)w * h * 3 / 2 + 256;
+        int ok = 0;
+        if (w > 0 && h > 0 && w <= 1920 && h <= 1088) {
+            if (e->cap < need) { free(e->buf); e->buf = (uint8_t *)memalign(128, need); e->cap = e->buf ? need : 0; }
+            if (e->buf) {
+                s32 g = -1;
+                if (!use_yuv) { vdecPictureFormat f = { VDEC_PICFMT_ARGB32, mtx, 0xFF }; g = vdecGetPicture(vh, &f, e->buf); if (g == 0) ok = 1; else last_gp_err = (uint32_t)g; }
+                if (!ok) {
+                    uint8_t *tmp = e->buf + (size_t)w * h * 4;
+                    vdecPictureFormat f2 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
+                    s32 g2 = vdecGetPicture(vh, &f2, tmp);
+                    if (g2 == 0) { yuv_to_argb(tmp, e->buf, w, h); ok = 1; if (!use_yuv && ++yuv_ok > 3) use_yuv = 1; }
+                    else last_gp_err2 = (uint32_t)g2;
+                }
             }
         }
-        if (yuv) yuv_to_argb(frame + (size_t)1920 * 1088 * 4, frame, w, h);
+        if (!ok) {
+            /* can't deliver it: release it so the decoder keeps going */
+            vdecPictureFormat f3 = { VDEC_PICFMT_YUV420P, mtx, 0xFF };
+            if (vdecGetPicture(vh, &f3, NULL) != 0) break;
+        }
         if (pics_ready > 0) pics_ready--;
         out_count++;
+        if (last_pic_pts >= 0 && !dmx->frame_count_ts) { double d = pts - last_pic_pts; if (d > 0.005 && d < 0.2) frame_dur = frame_dur * 0.9 + d * 0.1; }
         last_pic_pts = pts;
-        if (w <= 0 || h <= 0 || w > 1920 || h > 1088) continue;
-        if (pts < now - 0.080 && pics_ready > 1) continue;
-        ensure_textures(w, h);
+        got_pics++;
+        if (ok) { e->w = w; e->h = h; e->pts = pts; pq_w++; }
+    }
+    sysMutexUnlock(pic_mtx);
+}
+
+static void pq_reset(void)
+{
+    if (pic_mtx_ok) sysMutexLock(pic_mtx, 0);
+    pq_w = pq_r = 0;
+    if (pic_mtx_ok) sysMutexUnlock(pic_mtx);
+}
+
+static void pq_free(void)
+{
+    for (int i = 0; i < PQ; i++) { free(pq[i].buf); pq[i].buf = NULL; pq[i].cap = 0; }
+    pq_w = pq_r = 0;
+}
+
+static void fetch_pictures(void)
+{
+    if (paused || !vh || !vs) return;
+    pull_pictures();
+    double now = video_position();
+    if (pic_mtx_ok) sysMutexLock(pic_mtx, 0);
+    while (pq_r != pq_w) {
+        pq_t *e = &pq[pq_r % PQ];
+        if (!wall_started) { wall_started = 1; wall_base = e->pts; wall_t0 = now_us(); wall_pause_acc = 0; now = video_position(); }
+        next_pic_pts = e->pts;
+        int backed_up = (vq_w - vq_r) > VQ * 3 / 4 || pq_w - pq_r >= PQ;
+        if (e->pts > now + 0.010 && cur_tex >= 0 && !backed_up) break;
+        /* late and a newer picture is also due: skip this one */
+        if (pq_w - pq_r > 1 && pq[(pq_r + 1) % PQ].pts <= now) { pq_r++; continue; }
+        ensure_textures(e->w, e->h);
         int b = (cur_tex + 1) & 1;
-        if (!tex[b]) break;
-        memcpy(gfx_texture_data(tex[b]), frame, (size_t)w * h * 4);
-        cur_tex = b; frame_w = w; frame_h = h;
+        if (tex[b]) { memcpy(gfx_texture_data(tex[b]), e->buf, (size_t)e->w * e->h * 4); cur_tex = b; frame_w = e->w; frame_h = e->h; }
+        pq_r++;
         break;
     }
-    if (demux_done && video_done && pics_ready == 0 && au_sent == au_done && (asi >= 0 && audio_started ? ring_used() < AUDIO_BLOCK_SAMPLES : 1)) st = VID_ENDED;
+    int empty = pq_r == pq_w;
+    if (pic_mtx_ok) sysMutexUnlock(pic_mtx);
+    pull_pictures();
+    if (demux_done && video_done && empty && pics_ready == 0 && au_sent == au_done && (asi >= 0 && audio_started ? ring_used() < AUDIO_BLOCK_SAMPLES : 1)) st = VID_ENDED;
 }
 
 void video_render(float x, float y, float w, float h)
