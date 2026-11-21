@@ -29,6 +29,7 @@
 #include "arabic.h"
 #include "launcher.h"
 #include "webman.h"
+#include "covers.h"
 #define SYS_WEBMAN 100
 
 #define APP_DIR   "/dev_hdd0/game/CRPK00001/USRDIR"
@@ -81,8 +82,8 @@ static void read_input(void)
 }
 
 /* =========================================================== settings */
-typedef struct { int lang; int mode; int del; int ftp; } settings_t;
-static settings_t cfg = { 0, MODE_XMB_QUEUE, 0, 0 };
+typedef struct { int lang; int mode; int del; int ftp; int covers; } settings_t;
+static settings_t cfg = { 0, MODE_XMB_QUEUE, 0, 0, 1 };
 
 static void load_settings(void)
 {
@@ -94,6 +95,7 @@ static void load_settings(void)
             if (s.mode >= 0 && s.mode <= 1) cfg.mode = s.mode;
             if (s.del >= 0 && s.del <= 1) cfg.del = s.del;
             if (s.ftp >= 0 && s.ftp <= 1) cfg.ftp = s.ftp;
+            if (s.covers >= 0 && s.covers <= 1) cfg.covers = s.covers;
         }
         fclose(f);
     }
@@ -253,7 +255,7 @@ static int usb_mask(void)
 #define MAX_ENTRIES 3000
 typedef struct {
     char name[256];
-    int is_dir, type, marked, parsed;
+    int is_dir, type, marked, parsed, cover_wait;
     uint64_t size;
     pkg_info_t info;
     texture_t icon;
@@ -340,7 +342,7 @@ static int thumbable(const char *n)
 
 /* ---------- background loader: PKG info + thumbnails are read and decoded off the UI thread ---------- */
 static volatile int ld_state;          /* 0 idle, 1 job queued, 2 result ready */
-static struct { int gen, idx, is_img; uint64_t size; char name[256]; char path[1400]; texture_t tex; pkg_info_t info; } ld;
+static struct { int gen, idx, is_img, is_dir, cover_st; uint64_t size; char name[256]; char path[1400]; texture_t tex; pkg_info_t info; } ld;
 static sys_ppu_thread_t ld_thr;
 static volatile int ld_quit;
 
@@ -350,8 +352,27 @@ static void loader_thread(void *arg)
     while (!ld_quit) {
         if (ld_state != 1) { usleep(3000); continue; }
         ld.tex = NULL;
+        ld.cover_st = CV_NONE;
         memset(&ld.info, 0, sizeof(ld.info));
-        if (ld.is_img) {
+        if (ld.is_img == 2) {
+            char cp[1400];
+            ld.cover_st = covers_lookup(ld.path, ld.name, ld.is_dir, cp, sizeof(cp));
+            if (ld.cover_st == CV_CACHED) {
+                vfs_file_t *f = vfs_open_read(cp);
+                if (f) {
+                    uint64_t sz64 = vfs_size(f);
+                    uint32_t sz = sz64 < 4 * 1024 * 1024 ? (uint32_t)sz64 : 0, got = 0;
+                    uint8_t *b = sz ? (uint8_t *)malloc(sz) : NULL;
+                    while (b && got < sz) { int64_t r = vfs_read(f, b + got, sz - got); if (r <= 0) break; got += (uint32_t)r; }
+                    vfs_close(f);
+                    if (b && got == sz && sz > 8) {
+                        texture_t t = (b[0] == 0x89 && b[1] == 'P') ? gfx_load_png_buffer(b, sz) : gfx_load_jpg_buffer(b, sz);
+                        ld.tex = gfx_make_thumb(t, 112, 112);
+                    }
+                    free(b);
+                }
+            }
+        } else if (ld.is_img) {
             if (ld.size > 0 && ld.size <= 8 * 1024 * 1024) {
                 vfs_file_t *f = vfs_open_read(ld.path);
                 if (f) {
@@ -392,6 +413,12 @@ static void loader_stop(void)
 
 static void lazy_parse(void)
 {
+    static int seen_gen;
+    int g = covers_generation();
+    if (g != seen_gen) {
+        seen_gen = g;
+        for (int i = 0; i < ent_count; i++) if (ents[i].cover_wait) { ents[i].cover_wait = 0; if (ents[i].parsed == 1 && !ents[i].icon) ents[i].parsed = 0; }
+    }
     /* 1. collect a finished result */
     if (ld_state == 2) {
         if (ld.gen == dir_gen && ld.idx < ent_count && !strcmp(ents[ld.idx].name, ld.name)) {
@@ -399,6 +426,7 @@ static void lazy_parse(void)
             e->info = ld.info;
             e->icon = ld.tex;
             e->parsed = 1;
+            e->cover_wait = (ld.is_img == 2 && ld.cover_st == CV_PENDING);
         } else {
             if (ld.tex) gfx_free_texture(ld.tex);
             pkg_free_info(&ld.info);
@@ -415,9 +443,10 @@ static void lazy_parse(void)
                 entry_t *e = &ents[i];
                 if (e->parsed) continue;
                 int img = e->type == FT_IMAGE && thumbable(e->name);
-                if (e->type != FT_PKG && !img) continue;
+                int cov = !img && e->type != FT_PKG && cfg.covers && covers_candidate(e->name, e->is_dir);
+                if (e->type != FT_PKG && !img && !cov) continue;
                 e->parsed = 2;   /* pending */
-                ld.gen = dir_gen; ld.idx = i; ld.is_img = img; ld.size = e->size;
+                ld.gen = dir_gen; ld.idx = i; ld.is_img = cov ? 2 : img; ld.is_dir = e->is_dir; ld.size = e->size;
                 snprintf(ld.name, sizeof(ld.name), "%s", e->name);
                 path_join(ld.path, sizeof(ld.path), cwd, e->name);
                 ld_state = 1;
@@ -661,13 +690,15 @@ static void draw_list(void)
             if (e->icon) {
                 int tw0, th0;
                 gfx_texture_size(e->icon, &tw0, &th0);
-                float bw = 60, bh = 33, sc = bw / tw0;
+                int portrait = th0 > tw0;
+                float bw = portrait ? 30 : 60, bh = portrait ? 38 : 33, by = portrait ? ry + 2 : ry + 5;
+                float sc = bw / tw0;
                 if (bh / th0 < sc) sc = bh / th0;
                 float dw = tw0 * sc, dh = th0 * sc;
-                gfx_rrect(MX(ix, 60), ry + 5, 60, 33, 4, RGBA8(0, 0, 0, 90));
-                gfx_texture(e->icon, MX(ix, 60) + (60 - dw) / 2, ry + 5 + (33 - dh) / 2, dw, dh, RGBA8(255, 255, 255, 255));
-                gfx_rrect_border(MX(ix, 60) - 1, ry + 4, 62, 35, 4, 1, RGBA8(255, 255, 255, 60));
-                tx = ix + 72;
+                if (!portrait) gfx_rrect(MX(ix, bw), by, bw, bh, 4, RGBA8(0, 0, 0, 90));
+                gfx_texture(e->icon, MX(ix, bw) + (bw - dw) / 2, by + (bh - dh) / 2, dw, dh, RGBA8(255, 255, 255, 255));
+                gfx_rrect_border(MX(ix, bw) + (bw - dw) / 2 - 1, by + (bh - dh) / 2 - 1, dw + 2, dh + 2, 3, 1, RGBA8(255, 255, 255, 60));
+                tx = ix + (portrait ? 42 : 72);
             } else if (e->type == FT_IMAGE && thumbable(e->name) && e->parsed != 1) {
                 /* loading placeholder: pulsing tile */
                 int a = 40 + (int)(sinf(gfx_frame() * 0.15f) * 25);
@@ -1141,13 +1172,13 @@ static void draw_sfo(void)
     }
 }
 
-#define SET_ITEMS 6
+#define SET_ITEMS 7
 static void draw_settings(void)
 {
-    float x, y, w = 520, h = 376;
+    float x, y, w = 520, h = 422;
     draw_modal_frame(w, h, &x, &y);
     gfx_text(SCR_W / 2, y + 20, T(S_SETTINGS), 20, 1, C_TEXT, ALIGN_CENTER);
-    const int labels[SET_ITEMS] = { S_SET_LANG, S_SET_MODE, S_SET_DELETE, S_FTP, S_SET_ABOUT, S_SET_EXIT };
+    const int labels[SET_ITEMS] = { S_SET_LANG, S_SET_MODE, S_SET_DELETE, S_FTP, S_COVERS, S_SET_ABOUT, S_SET_EXIT };
     char ftpv[96];
     if (ftp_running()) {
         if (ftp_port() == 21) snprintf(ftpv, sizeof(ftpv), "%s  ftp://%s", T(S_ON), ftp_ip());
@@ -1155,7 +1186,7 @@ static void draw_settings(void)
     } else snprintf(ftpv, sizeof(ftpv), "%s", T(S_OFF));
     const char *vals[SET_ITEMS] = {
         T(S_LANG_NAME), cfg.mode == MODE_XMB_QUEUE ? T(S_MODE_XMB) : T(S_MODE_PKGS),
-        cfg.del ? T(S_DELETE) : T(S_KEEP), ftpv, T(S_ABOUT_TXT), NULL
+        cfg.del ? T(S_DELETE) : T(S_KEEP), ftpv, cfg.covers ? T(S_ON) : T(S_OFF), T(S_ABOUT_TXT), NULL
     };
     for (int i = 0; i < SET_ITEMS; i++) {
         float iy = y + 60 + i * 48, ix = x + 24, iw = w - 48;
@@ -1167,7 +1198,7 @@ static void draw_settings(void)
         gfx_text(lx, iy + 11, T(labels[i]), 14, 1, C_TEXT, RTL() ? ALIGN_RIGHT : ALIGN_LEFT);
         if (vals[i]) {
             char v[160];
-            if (i < 4) snprintf(v, sizeof(v), "\xE2\x80\xB9  %s  \xE2\x80\xBA", vals[i]); else snprintf(v, sizeof(v), "%s", vals[i]);
+            if (i < 5) snprintf(v, sizeof(v), "\xE2\x80\xB9  %s  \xE2\x80\xBA", vals[i]); else snprintf(v, sizeof(v), "%s", vals[i]);
             gfx_text(vx, iy + 12, v, 12, 0, i == set_sel ? C_TEXT : C_DIM, RTL() ? ALIGN_LEFT : ALIGN_RIGHT);
         }
     }
@@ -1836,7 +1867,8 @@ static void handle_settings(void)
             }
             else ftp_stop();
         }
-        else if (set_sel == 5 && (in_pressed & B_OK)) quit_req = 1;
+        else if (set_sel == 4) { cfg.covers = !cfg.covers; covers_enable(cfg.covers); save_settings(); refresh_keep(); }
+        else if (set_sel == 6 && (in_pressed & B_OK)) quit_req = 1;
     }
     if (in_pressed & (B_CANCEL | B_START)) ui = UI_BROWSE;
 }
@@ -1906,6 +1938,8 @@ int main(void)
     ya2d_paddata[0].ANA_L_H = 0x80;
     ya2d_paddata[0].ANA_L_V = 0x80;
     ents = calloc(MAX_ENTRIES, sizeof(entry_t));
+    covers_init(APP_DIR "/covers");
+    covers_enable(cfg.covers);
     loader_start();
     raw = calloc(MAX_ENTRIES, sizeof(vfs_entry_t));
     clip = calloc(OPS_MAX_SRC, 1024);
@@ -2082,6 +2116,7 @@ int main(void)
     audio_stop();
     ftp_stop();
     loader_stop();
+    covers_shutdown();
     free_entries();
     vfs_shutdown();
     gfx_shutdown();

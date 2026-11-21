@@ -165,6 +165,7 @@ static const char *en[S_COUNT] = {
     [S_WM_NOT_RUNNING] = "webMAN MOD isn't running",
     [S_WM_NO_CACHE] = "Not in webMAN's list yet: refresh webMAN (prepISO) first",
     [S_WM_ERR] = "webMAN couldn't mount this game",
+    [S_COVERS] = "Download covers",
 };
 
 static const char *ar[S_COUNT] = {
@@ -330,6 +331,7 @@ static const char *ar[S_COUNT] = {
     [S_WM_NOT_RUNNING] = "webMAN MOD لا يعمل",
     [S_WM_NO_CACHE] = "ليست في قائمة webMAN بعد: حدّث webMAN (prepISO) أولاً",
     [S_WM_ERR] = "تعذّر على webMAN تركيب اللعبة",
+    [S_COVERS] = "تحميل أغلفة الألعاب",
 };
 
 const char *T(int id)
