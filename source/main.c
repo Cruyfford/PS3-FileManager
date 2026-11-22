@@ -36,6 +36,7 @@
 #include "theme.h"
 #include "disc.h"
 #include "tools.h"
+#include "catalog.h"
 #include "integrity.h"
 #include "subdl.h"
 #include "hubapi.h"
@@ -2743,6 +2744,15 @@ static void handle_osk(void)
         else if (!sr_q[0] || !search_count()) tl_scr = TS_HUB;
         return;
     }
+    if (osk_purpose == 9) {
+        ui = UI_TOOLS;
+        if (r == OSK_RESULT_OK) {
+            snprintf(arc_query,sizeof(arc_query),"%s",out);
+            arc_page=0;arc_confirm=0;
+            arc_scan();
+        }
+        return;
+    }
     if (osk_purpose == 8) {
         ui = UI_VIDEO;
         if (r == OSK_RESULT_OK) subdl_save_key(SUBKEY_FILE, out);
@@ -3016,7 +3026,7 @@ int main(void)
             gfx_end_frame();
             continue;
         }
-        if (ui == UI_TOOLS || (ui == UI_OSK && osk_purpose == 5) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
+        if (ui == UI_TOOLS || (ui == UI_OSK && (osk_purpose == 5 || osk_purpose == 9)) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
             draw_background(t);
             draw_tools();
             if (ui == UI_TOOLS) draw_tools_hints();
@@ -3111,6 +3121,7 @@ int main(void)
 
     if (inst_status()->state == INST_RUNNING) { inst_cancel(); while (inst_status()->state == INST_RUNNING) usleep(10000); }
     if (ops_status()->state == OPS_RUNNING) { ops_cancel(); while (ops_status()->state == OPS_RUNNING) usleep(10000); }
+    catalog_shutdown();
     integrity_shutdown();
     video_close();
     audio_stop();
