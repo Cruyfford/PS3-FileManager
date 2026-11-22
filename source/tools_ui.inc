@@ -222,6 +222,34 @@ static void handle_tools_disc(void)
 typedef struct { char path[512]; char dir[64]; char title[128]; char sub[128]; char user[16]; int marked; } save_t;
 static save_t *sv; static int sv_n, sv_sel, sv_top, sv_tab, sv_dest;
 static char sv_user[16] = "00000001";
+static char sv_accounts[32][16];
+static int sv_naccounts, sv_account_sel, sv_restore_confirm;
+
+/* Explicit target account selection, instead of guessing the account with
+ * the largest number of existing saves. */
+static void sv_read_accounts(void)
+{
+    sv_naccounts=0;
+    sv_account_sel=0;
+    vfs_entry_t *users=malloc(sizeof(vfs_entry_t)*32);
+    if (!users) return;
+    int n=vfs_list("/dev_hdd0/home",users,32);
+    for (int i=0;i<n && sv_naccounts<32;i++) {
+        if (!users[i].is_dir || strlen(users[i].name)!=8) continue;
+        int ok=1;
+        for (int j=0;j<8;j++)
+            if (users[i].name[j]<'0' || users[i].name[j]>'9') { ok=0; break; }
+        if (!ok) continue;
+        snprintf(sv_accounts[sv_naccounts],sizeof(sv_accounts[0]),"%s",users[i].name);
+        if (!strcmp(users[i].name,sv_user)) sv_account_sel=sv_naccounts;
+        sv_naccounts++;
+    }
+    free(users);
+    if (sv_naccounts)
+        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
+    else sv_user[0]=0;
+}
+
 static texture_t sv_icon; static int sv_icon_for = -1;
 
 static void sv_add(const char *dir, const char *name, const char *user)
@@ -258,13 +286,12 @@ static void sv_scan(void)
     if (!e) return;
     if (sv_tab == 0) {
         vfs_entry_t *u = malloc(sizeof(vfs_entry_t) * 32);
-        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0, best = -1;
+        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0;
         for (int k = 0; k < nu; k++) {
             if (!u[k].is_dir) continue;
             char d[256]; snprintf(d, sizeof(d), "/dev_hdd0/home/%s/savedata", u[k].name);
-            int n = vfs_list(d, e, 1024), before = sv_n;
+            int n = vfs_list(d, e, 1024);
             for (int i = 0; i < n; i++) if (e[i].is_dir) sv_add(d, e[i].name, u[k].name);
-            if (sv_n - before > best) { best = sv_n - before; snprintf(sv_user, sizeof(sv_user), "%s", u[k].name); }
         }
         free(u);
     } else {
@@ -318,12 +345,19 @@ static void draw_tools_saves(void)
         L_text(tx + w / 2, 66, nm, 13, 1, t == sv_tab ? C_TEXT : C_DIM, ALIGN_CENTER);
         tx += w + 8;
     }
-    /* destination (backup tab) */
+    /* Explicit destination selector, including user account on USB restore. */
     if (sv_tab == 0) {
         char d[200];
         if (sv_nusb) { volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]]; snprintf(d, sizeof(d), "%s: %s%s", T(S_BACKUP_TO), v->label, sv_nusb > 1 ? "   \xE2\x97\x80 \xE2\x96\xB6" : ""); }
         else snprintf(d, sizeof(d), "%s", T(S_NO_USB));
         L_text_fit(SCR_W - 28, 66, 420, d, 12, 1, sv_nusb ? C_TEXT : RGBA8(255, 180, 60, 255), ALIGN_RIGHT);
+    } else {
+        char d[190];
+        snprintf(d,sizeof(d),"Restore to PS3 user: %s%s",
+                 sv_naccounts ? sv_user : "NO USER",
+                 sv_naccounts > 1 ? "  (LEFT / RIGHT)" : "");
+        L_text_fit(SCR_W-28,66,390,d,12,1,
+                   sv_naccounts ? C_TEXT : RGBA8(255,180,60,255),ALIGN_RIGHT);
     }
     float x = 28, y = 100, w = SCR_W - 56, ih = 44;
     int rows = 7;
@@ -354,10 +388,10 @@ static void draw_tools_saves(void)
     L_text_fit(px + pw / 2, y + 150, pw - 20, sv[sv_sel].title, 12, 1, C_TEXT, ALIGN_CENTER);
     char cnt[64]; snprintf(cnt, sizeof(cnt), "%d / %d", sv_sel + 1, sv_n);
     L_text(px + pw / 2, y + 260, cnt, 11, 0, C_DIM, ALIGN_CENTER);
-    L_text_fit(28, 425, SCR_W - 56, T(S_SAVE_WORK_COPY), 12, 1, C_TEXT, ALIGN_LEFT);
+    L_text_fit(28, 411, SCR_W - 56, T(S_SAVE_WORK_COPY), 10, 1, C_TEXT, ALIGN_LEFT);
     char pfd[1100];
     snprintf(pfd, sizeof(pfd), "%s/PARAM.PFD", sv[sv_sel].path);
-    if (vfs_exists(pfd)) L_text_fit(28, 450, SCR_W - 56, T(S_SAVE_WORK_PFD), 11, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
+    if (vfs_exists(pfd)) L_text_fit(28, 433, SCR_W - 56, T(S_SAVE_WORK_PFD), 9, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
 }
 
 static void sv_run(void)
@@ -373,26 +407,66 @@ static void sv_run(void)
         volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]];
         path_join(dst, sizeof(dst), v->root, "PS3"); vfs_mkdir(dst);
         path_join(dst, sizeof(dst), v->root, "PS3/SAVEDATA"); vfs_mkdir(dst);
-    } else snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
+    } else {
+        if (!sv_naccounts || !sv_user[0]) {
+            show_toast("No PS3 user account for restore");
+            return;
+        }
+        snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
+        if (vfs_mkdir(dst)!=0) {
+            show_toast("Could not open target PS3 savedata directory");
+            return;
+        }
+    }
+    if (ops_status()->state == OPS_RUNNING) {
+        show_toast("A file operation is already running");
+        return;
+    }
     ops_ret_tools = 1;
-    if (ops_start(OP_COPY, srcs, n, dst)) open_modal(UI_PROGRESS_OPS); else ops_ret_tools = 0;
+    if (ops_start(sv_tab == 0 ? OP_COPY : OP_SAVE_RESTORE, srcs, n, dst))
+        open_modal(UI_PROGRESS_OPS);
+    else { ops_ret_tools = 0; show_toast("Could not start save transfer"); }
 }
 
 static void handle_tools_saves(void)
 {
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
-    if (in_pressed & (B_L1 | B_R1)) { sv_tab = !sv_tab; sv_scan(); return; }
-    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
+    if (in_pressed & (B_L1 | B_R1)) {
+        sv_tab = !sv_tab;
+        sv_restore_confirm=0;
+        if (sv_tab) sv_read_accounts();
+        sv_scan();
+        return;
+    }
+    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) {
+        sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
+    }
+    if (sv_tab == 1 && sv_naccounts > 1 && (in_pressed & (L | R))) {
+        sv_account_sel=(sv_account_sel+((in_pressed & R) ? 1 : sv_naccounts-1))%sv_naccounts;
+        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
+        sv_restore_confirm=0;
+    }
     if (!sv_n) return;
-    if (in_active & B_UP) sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1;
-    if (in_active & B_DOWN) sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0;
-    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; }
-    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; }
-    if (in_pressed & B_TRI) { sv_copy_workspace(); return; }
-    if (in_pressed & B_SQU) { sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
-    if (in_pressed & B_SELECT) { int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
-    if (in_pressed & B_OK) sv_run();
+    if (in_active & B_UP) { sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1; sv_restore_confirm=0; }
+    if (in_active & B_DOWN) { sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0; sv_restore_confirm=0; }
+    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; sv_restore_confirm=0; }
+    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; sv_restore_confirm=0; }
+    if (in_pressed & B_TRI) { sv_restore_confirm=0; sv_copy_workspace(); return; }
+    if (in_pressed & B_SQU) { sv_restore_confirm=0; sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
+    if (in_pressed & B_SELECT) { sv_restore_confirm=0; int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
+    if (in_pressed & B_OK) {
+        if (sv_tab == 1 && !sv_restore_confirm) {
+            if (!sv_naccounts) { show_toast("No PS3 user account for restore"); return; }
+            sv_restore_confirm=1;
+            char hint[180];
+            snprintf(hint,sizeof(hint),"Restore to PS3 user %s? Press X again to confirm",sv_user);
+            show_toast(hint);
+            return;
+        }
+        sv_restore_confirm=0;
+        sv_run();
+    }
 }
 
 /* ---------------------------------------------------------------- storage analyzer */
@@ -819,7 +893,7 @@ static void handle_tools(void)
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
-            else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_scan_usb(); sv_scan(); }
+            else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_restore_confirm=0; sv_read_accounts(); sv_scan_usb(); sv_scan(); }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
             else if (tl_sel == 3) { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
             else arc_open();

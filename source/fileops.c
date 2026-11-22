@@ -255,6 +255,11 @@ static int copy_tree(const char *src, const char *dst, int depth)
     vfs_entry_t *ents = (vfs_entry_t *)malloc(sizeof(vfs_entry_t) * MAX_LIST);
     if (!ents) return OPE_MEM;
     int n = vfs_list(src, ents, MAX_LIST);
+    if (n < 0) {
+        free(ents);
+        snprintf(st.error_path, sizeof(st.error_path), "%s", src);
+        return OPE_READ; /* unreadable USB folder must not be reported as an empty save */
+    }
     int err = OPE_NONE;
     char cs[1024], cd[1024];
     for (int i = 0; i < n && !cancel_flag && !err; i++) {
@@ -273,6 +278,119 @@ static void pt_cb(uint64_t add, const char *cur)
 }
 
 static void pt_cb_fwd(uint64_t add, const char *cur) { pt_cb(add, cur); }
+
+/* Verify every staged file has the same size as its USB source before
+ * touching the existing save. This detects premature EOF and disconnects. */
+static int verify_staged_tree(const char *src, const char *dst, int depth)
+{
+    if (depth > 32) return OPE_READ;
+    int sdir=0, ddir=0; uint64_t ssize=0, dsize=0;
+    if (vfs_stat(src,&sdir,&ssize)!=0 || vfs_stat(dst,&ddir,&dsize)!=0 ||
+        sdir!=ddir) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+        return OPE_READ;
+    }
+    if (!sdir) {
+        if (ssize!=dsize) {
+            snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+            return OPE_READ;
+        }
+        return OPE_NONE;
+    }
+    vfs_entry_t *entries=malloc(sizeof(vfs_entry_t)*MAX_LIST);
+    if (!entries) return OPE_MEM;
+    int n=vfs_list(src,entries,MAX_LIST),err=OPE_NONE;
+    if (n<0 || n==MAX_LIST) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+        err=OPE_READ;
+    }
+    char s[1024],d[1024];
+    for (int i=0; !err && i<n && !cancel_flag; i++) {
+        join(s,sizeof(s),src,entries[i].name);
+        join(d,sizeof(d),dst,entries[i].name);
+        err=verify_staged_tree(s,d,depth+1);
+    }
+    free(entries);
+    return err;
+}
+
+/* Safe restore from USB to the native PS3 save directory.
+ * Copy to a private staging folder FIRST. An existing save is moved out of
+ * savedata as an untouched backup, and is never overwritten in place.
+ * All renames happen on the native HDD after the copy has succeeded. */
+static int restore_save_one(const char *src, const char *dest_root, uint64_t stamp, int idx)
+{
+    const char *name = base_name(src);
+    int src_is_dir = 0;
+    if (!*name || strchr(name, '/') ||
+        vfs_stat(src, &src_is_dir, NULL) != 0 || !src_is_dir) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+        return OPE_OPEN_SRC;
+    }
+    /* Restore only to the validated on-console home/NNNNNNNN/savedata path. */
+    const char *prefix="/dev_hdd0/home/";
+    const size_t prelen=strlen(prefix);
+    if (strncmp(dest_root,prefix,prelen) || strlen(dest_root)!=prelen+8+9 ||
+        strcmp(dest_root+prelen+8,"/savedata")) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",dest_root);
+        return OPE_OPEN_DST;
+    }
+    for (int j=0;j<8;j++) {
+        char ch=dest_root[prelen+j];
+        if (ch<'0' || ch>'9') return OPE_OPEN_DST;
+    }
+
+    const char *tmp_root="/dev_hdd0/CRUYFFORD_RESTORE_STAGING";
+    const char *bak_root="/dev_hdd0/CRUYFFORD_SAVE_RESTORE_BACKUPS";
+    char uid[9], user_bak[1024], stage[1024], target[1024], backup[1024], sfo[1024];
+    memcpy(uid,dest_root+prelen,8); uid[8]=0;
+    if (vfs_mkdir(tmp_root)!=0 || vfs_mkdir(bak_root)!=0) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",tmp_root);
+        return OPE_MKDIR;
+    }
+    join(user_bak,sizeof(user_bak),bak_root,uid);
+    if (vfs_mkdir(user_bak)!=0) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",user_bak);
+        return OPE_MKDIR;
+    }
+    snprintf(stage,sizeof(stage),"%s/fm_%llu_%d_%s",tmp_root,
+             (unsigned long long)stamp,idx,name);
+    snprintf(backup,sizeof(backup),"%s/fm_%llu_%d_%s",user_bak,
+             (unsigned long long)stamp,idx,name);
+    join(target,sizeof(target),dest_root,name);
+    if (vfs_exists(stage) || vfs_exists(backup)) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",stage);
+        return OPE_OPEN_DST; /* never reuse a staging/backup directory */
+    }
+
+    int error=copy_tree(src,stage,0);
+    if (error || cancel_flag) return error; /* original live save remains unchanged */
+    error=verify_staged_tree(src,stage,0);
+    if (error || cancel_flag) return error;
+    join(sfo,sizeof(sfo),stage,"PARAM.SFO");
+    if (!vfs_exists(sfo)) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",sfo);
+        return OPE_READ;
+    }
+    if (cancel_flag) return OPE_NONE;
+
+    const int previous=vfs_exists(target);
+    if (previous && vfs_rename(target,backup)!=0) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",target);
+        return OPE_WRITE;
+    }
+    if (vfs_rename(stage,target)!=0) {
+        if (previous) {
+            /* Best-effort rollback: never delete the original backup. */
+            if (vfs_rename(backup,target)!=0)
+                snprintf(st.error_path,sizeof(st.error_path),
+                         "ROLLBACK REQUIRED: %s",backup);
+            else snprintf(st.error_path,sizeof(st.error_path),"%s",stage);
+        } else snprintf(st.error_path,sizeof(st.error_path),"%s",stage);
+        return OPE_WRITE;
+    }
+    return OPE_NONE;
+}
 
 static void worker(void *arg)
 {
@@ -347,6 +465,22 @@ static void worker(void *arg)
         }
     }
 
+    if (q_op == OP_SAVE_RESTORE && !err) {
+        /* Destination must already be a real PS3 account savedata folder. */
+        if (!vfs_exists(q_dst)) {
+            snprintf(st.error_path,sizeof(st.error_path),"%s",q_dst);
+            err=OPE_OPEN_DST;
+        }
+        const uint64_t stamp=ops_now_ms();
+        for (int i=0; i<q_n && !cancel_flag && !err; i++)
+            err=restore_save_one(q_src[i],q_dst,stamp,i);
+        free(buf); buf=NULL;
+        st.error=err;
+        st.state=cancel_flag ? OPS_CANCELLED : err ? OPS_ERROR : OPS_DONE;
+        sysThreadExit(0);
+        return;
+    }
+
     for (int i = 0; i < q_n && !cancel_flag && !err; i++) {
         const char *src = q_src[i];
         if (q_op == OP_DELETE) { err = delete_tree(src, 0); continue; }
@@ -377,6 +511,13 @@ static void worker(void *arg)
 int ops_start(int op, char srcs[][1024], int n, const char *dst_dir)
 {
     if (st.state == OPS_RUNNING || n <= 0) return 0;
+    /* Previous job may be complete but its joinable thread has not been
+     * reaped. Reap it before reusing the global queue or thread handle. */
+    if (thr_alive) {
+        u64 rv;
+        sysThreadJoin(thr,&rv);
+        thr_alive=0;
+    }
     if (!q_src) q_src = malloc(sizeof(*q_src) * OPS_MAX_SRC);
     if (!q_src) return 0;
     if (n > OPS_MAX_SRC) n = OPS_MAX_SRC;
