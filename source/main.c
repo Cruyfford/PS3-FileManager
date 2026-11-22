@@ -2936,6 +2936,7 @@ int main(void)
                     quit_req = 1;
                 }
                 play_after_copy = 0;
+                if (sv_work_pending) sv_work_completed = (s->state == OPS_DONE);
                 ops_reset();
                 if (jq_n && jq_start_next()) { open_modal(UI_PROGRESS_OPS); break; }
                 if (ops_ret_tools) { ops_ret_tools = 0; ui = UI_TOOLS; tools_after_ops(); break; }
