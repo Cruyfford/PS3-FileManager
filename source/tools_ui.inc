@@ -528,12 +528,12 @@ static void handle_tools_search(void)
 /* ---------------------------------------------------------------- ARCADIA offline catalog browser
  * User-supplied TSV file on USB/HDD; does not provide licenses or auto-install.
  */
-static int arc_category = CAT_GAMES, arc_sel, arc_top, arc_page, arc_confirm;
+static int arc_category = CAT_PS3, arc_sel, arc_top, arc_page, arc_confirm;
 static char arc_query[96], arc_source[1024];
 
 #define ARC_THUMB_SLOTS 8
 static texture_t arc_thumbs[ARC_THUMB_SLOTS];
-static char arc_thumb_ids[ARC_THUMB_SLOTS][24];
+static char arc_thumb_ids[ARC_THUMB_SLOTS][64];
 static int arc_thumb_bad[ARC_THUMB_SLOTS];
 static int arc_cover_last_frame = -1;
 
@@ -549,18 +549,20 @@ static void arc_thumbs_clear(void)
 
 static texture_t arc_thumb_get(int row_index, const catalog_item_t *item)
 {
-    if (!item || !item->title_id[0]) return NULL;
+    if (!item) return NULL;
     int slot = row_index % ARC_THUMB_SLOTS;
-    if (strcmp(arc_thumb_ids[slot],item->title_id)) {
+    char key[64];
+    snprintf(key,sizeof(key),"%s_%s",item->category,item->title_id[0]?item->title_id:item->title);
+    if (strcmp(arc_thumb_ids[slot],key)) {
         if (arc_thumbs[slot]) gfx_free_texture(arc_thumbs[slot]);
         arc_thumbs[slot] = NULL;
         arc_thumb_bad[slot] = 0;
-        snprintf(arc_thumb_ids[slot],sizeof(arc_thumb_ids[slot]),"%s",item->title_id);
+        snprintf(arc_thumb_ids[slot],sizeof(arc_thumb_ids[slot]),"%s",key);
     }
     if (arc_thumbs[slot] || arc_thumb_bad[slot]) return arc_thumbs[slot];
 
     char cp[700];
-    int state = covers_catalog_lookup(item->title_id,cp,sizeof(cp));
+    int state = covers_catalog_lookup_platform(item->title_id,item->title,item->category,cp,sizeof(cp));
     if (state != CV_CACHED) return NULL; /* background job still fetching */
     int frame=(int)gfx_frame();
     if (arc_cover_last_frame == frame) return NULL; /* decode at most 1 cover per frame */
@@ -612,34 +614,33 @@ static void arc_scan(void)
 static void arc_open(void)
 {
     arc_page = 0; arc_sel = arc_top = arc_confirm = 0;
-    if (!arc_find_file()) show_toast(g_lang ? "ضع ARCADIA_PS3_CATALOG.tsv في USB" : "Copy ARCADIA_PS3_CATALOG.tsv to USB root");
+    if (!arc_find_file()) show_toast("Copy ARCADIA_PS3_CATALOG.tsv (English V2) to USB root");
     else arc_scan();
     tl_scr = TS_CATALOG;
 }
 static void draw_tools_catalog(void)
 {
-    const char *cats[4]={"ALL","GAMES","DLC","THEMES / TOOLS"};
+    const char *cats[CAT_CATEGORY_COUNT]={"ALL","PS3","PS2","PSP","PS1","APPS","THEMES","DLC"};
     int n=catalog_result_count();
     int matched=catalog_total_matches();
     char sub[160];
     snprintf(sub,sizeof(sub),"%s | %d | %d/%d",cats[arc_category],matched,
              arc_page+1,(matched+CAT_PAGE_SIZE-1)/CAT_PAGE_SIZE);
-    tl_title("ARCADIA PS3 CATALOG",sub);
+    tl_title("ARCADIA STORE",sub);
     if (!arc_source[0]) {
         L_rrect(32,95,SCR_W-64,300,16,C_PANEL);
-        L_text(52,140,g_lang ? "ملف الكتالوج غير موجود" : "Catalog not found",
-               19,1,C_TEXT,ALIGN_LEFT);
+        L_text(52,140,"Catalog not found",19,1,C_TEXT,ALIGN_LEFT);
         L_text_fit(52,185,SCR_W-100,"ARCADIA_PS3_CATALOG.tsv",17,1,C_ACC1,ALIGN_LEFT);
-        L_text_fit(52,228,SCR_W-100,g_lang ?
-                   "ضع الملف في جذر USB ثم اضغط SELECT" :
-                   "Copy the TSV to USB root, then press SELECT",13,0,C_DIM,ALIGN_LEFT);
+        L_text_fit(52,228,SCR_W-100,
+                   "Copy the English V2 TSV to USB root, then press SELECT",
+                   13,0,C_DIM,ALIGN_LEFT);
         return;
     }
     L_text_fit(28,65,SCR_W-56,arc_source,9,0,C_DIM,ALIGN_LEFT);
     char q[220];
-    snprintf(q,sizeof(q),"%s: %s",g_lang ? "بحث" : "Search",arc_query[0]?arc_query:"-");
+    snprintf(q,sizeof(q),"Search: %s",arc_query[0]?arc_query:"-");
     L_text_fit(28,84,SCR_W-56,q,12,0,C_TEXT,ALIGN_LEFT);
-    const int rows=7;
+    const int rows=6;
     if (arc_sel < arc_top) arc_top=arc_sel;
     if (arc_sel >= arc_top+rows) arc_top=arc_sel-rows+1;
     for(int i=arc_top; i<n && i<arc_top+rows; i++) {
@@ -654,20 +655,19 @@ static void draw_tools_catalog(void)
             gfx_texture(cover,MX(37,36),y+2,36,38,0xFFFFFFFF);
         } else {
             L_rrect(37,y+2,36,38,5,RGBA8(30,65,108,255));
-            L_text(55,y+15,"PS3",10,1,C_TEXT,ALIGN_CENTER);
+            L_text_fit(38,y+15,34,r->category,9,1,C_TEXT,ALIGN_CENTER);
         }
         L_text_fit(84,y+5,SCR_W-294,r->title,13,on,C_TEXT,ALIGN_LEFT);
         char meta[120];
         snprintf(meta,sizeof(meta),"%s  |  %s",r->title_id[0]?r->title_id:"-",r->size);
         L_text_fit(84,y+25,SCR_W-294,meta,10,0,on?C_TEXT:C_DIM,ALIGN_LEFT);
         L_text_fit(SCR_W-42,y+14,144,
-                   catalog_is_direct_pkg(r)?(g_lang?"✕ تنزيل":"X Download"):
-                   (g_lang?"رابط خارجي":"External link"),
+                   catalog_is_direct_pkg(r)?"X Download":"External page",
                    10,on,on?C_TEXT:C_DIM,ALIGN_RIGHT);
     }
-    if(!n) L_text(50,224,g_lang?"لا توجد نتائج":"No matches",17,1,C_DIM,ALIGN_LEFT);
+    if(!n) L_text(50,224,"No results in this section",17,1,C_DIM,ALIGN_LEFT);
     /* Everything below remains inside the native 512-pixel frame. */
-    L_rrect(28,433,SCR_W-56,65,9,RGBA8(12,35,64,245));
+    L_rrect(28,391,SCR_W-56,55,9,RGBA8(12,35,64,245));
     int state=catalog_download_state();
     if(state==CAT_DL_RUNNING) {
         uint64_t done=0,total=0;
@@ -675,36 +675,33 @@ static void draw_tools_catalog(void)
         char d[30],t[30],msg[190];
         fmt_size(done,d,sizeof(d));
         if(total) fmt_size(total,t,sizeof(t)); else snprintf(t,sizeof(t),"?");
-        snprintf(msg,sizeof(msg),"%s: %s / %s",g_lang?"التحميل":"Downloading",d,t);
-        L_text_fit(41,445,SCR_W-82,msg,12,1,C_TEXT,ALIGN_LEFT);
+        snprintf(msg,sizeof(msg),"Downloading: %s / %s",d,t);
+        L_text_fit(41,399,SCR_W-82,msg,12,1,C_TEXT,ALIGN_LEFT);
         if(total) {
             float progress=(float)done/(float)total;
             if(progress>1) progress=1;
             if(progress<0) progress=0;
-            L_rrect(41,469,SCR_W-82,10,5,RGBA8(32,50,83,255));
-            L_rrect(41,469,(SCR_W-82)*progress,10,5,C_ACC1);
+            L_rrect(41,425,SCR_W-82,9,5,RGBA8(32,50,83,255));
+            L_rrect(41,425,(SCR_W-82)*progress,9,5,C_ACC1);
         }
-        L_text_fit(41,485,SCR_W-82,g_lang?"△ إلغاء التحميل":"Triangle: Cancel download",9,0,C_DIM,ALIGN_LEFT);
+        /* Triangle cancels the transfer; shown in controller hints. */
     } else if(state!=CAT_DL_IDLE) {
-        L_text_fit(41,443,SCR_W-82,
-                   state==CAT_DL_DONE?(g_lang?"اكتمل التحميل — SELECT لفتح الملف":"Download complete — SELECT to open"):
-                   state==CAT_DL_CANCELLED?(g_lang?"تم إلغاء التحميل":"Download cancelled"):
-                   (g_lang?"فشل التحميل":"Download failed"),
+        L_text_fit(41,399,SCR_W-82,
+                   state==CAT_DL_DONE?"Download complete — SELECT opens folder":
+                   state==CAT_DL_CANCELLED?"Download cancelled":"Download failed",
                    12,1,state==CAT_DL_DONE?C_OKC:C_TEXT,ALIGN_LEFT);
-        L_text_fit(41,467,SCR_W-82,catalog_download_message(),10,0,C_DIM,ALIGN_LEFT);
+        L_text_fit(41,422,SCR_W-82,catalog_download_message(),10,0,C_DIM,ALIGN_LEFT);
     } else if(n) {
         const catalog_item_t *it=catalog_result(arc_sel);
-        L_text_fit(41,444,SCR_W-82,
+        L_text_fit(41,399,SCR_W-82,
                    it && catalog_is_direct_pkg(it)?
-                   (g_lang?"✕ تحميل PKG إلى /dev_hdd0/packages":"X: Download PKG to /dev_hdd0/packages"):
-                   (g_lang?"هذا الرابط صفحة خارجية وليس ملف PKG مباشرًا":
-                            "External page: not a direct PKG link"),
+                   "X: Download direct PKG/P3T to /dev_hdd0/packages":
+                   "Unavailable as direct download: external page or unsupported link",
                    12,1,C_TEXT,ALIGN_LEFT);
-        L_text_fit(41,473,SCR_W-82,
-                   g_lang?"□ بحث   L1/R1 الأقسام   L2/R2 الصفحات   ○ رجوع":
-                          "Square: Search | L1/R1: Category | L2/R2: Page",
+        L_text_fit(41,421,SCR_W-82,
+                   "Square: Search | L1/R1: Section | L2/R2: Page | R3: Retry cover",
                    10,0,C_DIM,ALIGN_LEFT);
-    } else L_text_fit(41,450,SCR_W-82,"Select a category or search for a title",11,0,C_DIM,ALIGN_LEFT);
+    } else L_text_fit(41,407,SCR_W-82,"Select a section or search for a title",11,0,C_DIM,ALIGN_LEFT);
 }
 static void handle_tools_catalog(void)
 {
@@ -714,13 +711,13 @@ static void handle_tools_catalog(void)
         return;
     }
     if(in_pressed & (B_L1|B_R1)) {
-        arc_category=(arc_category+((in_pressed&B_L1)?3:1))%4;
+        arc_category=(arc_category+((in_pressed&B_L1)?CAT_CATEGORY_COUNT-1:1))%CAT_CATEGORY_COUNT;
         arc_page=0;arc_scan();
         return;
     }
     if(in_pressed & B_SQU) {
         osk_purpose=9;
-        if(osk_open(g_lang?"البحث في ARCADIA":"Search ARCADIA",arc_query)) ui=UI_OSK;
+        if(osk_open("Search ARCADIA",arc_query)) ui=UI_OSK;
         return;
     }
     if(in_pressed & B_SELECT) {
@@ -734,10 +731,19 @@ static void handle_tools_catalog(void)
     }
     if(catalog_download_state()==CAT_DL_RUNNING && (in_pressed&B_TRI)) {
         catalog_download_cancel();
-        show_toast(g_lang?"إلغاء التحميل...":"Cancelling download...");
+        show_toast("Cancelling download...");
         return;
     }
     int n=catalog_result_count();
+    if (in_pressed&B_R3 && n) {
+        const catalog_item_t *it=catalog_result(arc_sel);
+        if (it) {
+            covers_catalog_retry(it->title_id,it->category);
+            arc_thumbs_clear();
+            show_toast("Retrying cover download");
+        }
+        return;
+    }
     if(in_active&B_UP) arc_sel=arc_sel>0?arc_sel-1:n?n-1:0;
     if(in_active&B_DOWN) arc_sel=arc_sel<n-1?arc_sel+1:0;
     if((in_pressed&B_R2) && (arc_page+1)*CAT_PAGE_SIZE<catalog_total_matches()){
@@ -747,14 +753,13 @@ static void handle_tools_catalog(void)
     if((in_pressed&B_OK) && n) {
         const catalog_item_t *it=catalog_result(arc_sel);
         if(catalog_download_state()==CAT_DL_RUNNING) {
-            show_toast(g_lang?"يوجد تحميل جار بالفعل":"A download is already active");
+            show_toast("A download is already active");
         } else if(!catalog_is_direct_pkg(it)) {
-            show_toast(g_lang?"الرابط صفحة ويب، ليس تنزيل PKG مباشرًا":
-                              "This is a web page, not a direct PKG link");
+            show_toast("External page or unsupported direct file link");
         } else if(catalog_download_start(it)) {
-            show_toast(g_lang?"بدأ تنزيل PKG":"PKG download started");
+            show_toast("Download started (check progress below)");
         } else {
-            show_toast(g_lang?"تعذر بدء التحميل":"Could not start download");
+            show_toast("Could not start download");
         }
     }
 }

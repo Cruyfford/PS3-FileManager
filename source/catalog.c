@@ -5,6 +5,7 @@
  */
 #include "catalog.h"
 #include "vfs.h"
+#include "ftp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,7 +90,12 @@ int catalog_set_source(const char *path)
     if (!path || !path[0]) return 0;
     vfs_file_t *f = vfs_open_read(path);
     if (!f) return 0;
+    /* Do not accept the legacy GAMES/TOOLS catalog: platform filters would
+     * otherwise show empty pages without explaining how to fix them. */
+    char version[96] = {0};
+    int64_t got=vfs_read(f,version,sizeof(version)-1);
     vfs_close(f);
+    if (got < 15 || !strstr(version,"ARCADIA CATALOG v2")) return 0;
     snprintf(cat_path, sizeof(cat_path), "%s", path);
     return 1;
 }
@@ -108,9 +114,11 @@ int catalog_scan(int category, const char *query, int page)
     int offset = page < 0 ? 0 : page * CAT_PAGE_SIZE;
     while (next_line(&stream, line, sizeof(line))) {
         if (!parse_record(line, &item)) continue;
-        if (category == CAT_GAMES && strcmp(item.category,"GAMES")) continue;
-        if (category == CAT_DLC && strcmp(item.category,"DLC")) continue;
-        if (category == CAT_TOOLS && strcmp(item.category,"TOOLS")) continue;
+        /* The v2 catalog uses explicit platforms instead of broad GAMES/TOOLS buckets. */
+        static const char *const categories[CAT_CATEGORY_COUNT] =
+            {"ALL","PS3","PS2","PSP","PS1","APPS","THEMES","DLC"};
+        if (category > CAT_ALL && category < CAT_CATEGORY_COUNT &&
+            strcmp(item.category,categories[category])) continue;
         if (query && query[0] &&
             !contains_ascii_casefold(item.title, query) &&
             !contains_ascii_casefold(item.title_id, query)) continue;
@@ -131,7 +139,7 @@ static volatile int dl_state, dl_cancel;
 static volatile uint64_t dl_done, dl_total;
 static int dl_thread_created;
 static sys_ppu_thread_t dl_thread;
-static char dl_url[256], dl_file[128], dl_message[192];
+static char dl_url[256], dl_file[128], dl_message[192], dl_ext[5];
 
 static uint32_t url_fingerprint(const char *s)
 {
@@ -140,17 +148,25 @@ static uint32_t url_fingerprint(const char *s)
     return h;
 }
 
+static const char *catalog_direct_ext(const catalog_item_t *item)
+{
+    if (!item) return NULL;
+    /* No MediaFire HTML pages, redirect scrapers or non-HTTP URLs. */
+    if (strcmp(item->kind,"playstation_cdn") &&
+        strcmp(item->kind,"github_release") &&
+        strcmp(item->kind,"external_unverified")) return NULL;
+    if (strncmp(item->url,"http://",7) && strncmp(item->url,"https://",8)) return NULL;
+    const char *last = strrchr(item->url,'/');
+    if (!last) return NULL;
+    const char *end=strchr(last,'?');
+    if (!end) end=last+strlen(last);
+    if (end-last>=4 && !strncasecmp(end-4,".pkg",4)) return "pkg";
+    if (end-last>=4 && !strncasecmp(end-4,".p3t",4)) return "p3t";
+    return NULL;
+}
 int catalog_is_direct_pkg(const catalog_item_t *item)
 {
-    if (!item) return 0;
-    if (strcmp(item->kind,"playstation_cdn") && strcmp(item->kind,"github_release")) return 0;
-    if (strncmp(item->url,"http://",7) && strncmp(item->url,"https://",8)) return 0;
-    const char *last = strrchr(item->url, '/');
-    if (!last) return 0;
-    const char *end = strchr(last, '?');
-    if (!end) end = last + strlen(last);
-    if (end - last < 4) return 0;
-    return !strncasecmp(end - 4, ".pkg", 4);
+    return catalog_direct_ext(item)!=NULL;
 }
 
 static size_t on_write(void *ptr, size_t size, size_t nmemb, void *user)
@@ -191,8 +207,16 @@ static void download_worker(void *arg)
     }
     vfs_file_t *f = vfs_open_write(tmp);
     if (!f) {
-        snprintf(dl_message,sizeof(dl_message),"Cannot write to internal HDD");
+        snprintf(dl_message,sizeof(dl_message),"Cannot write to internal HDD (space or permissions)");
         dl_state = CAT_DL_FAILED;
+        sysThreadExit(0);
+        return;
+    }
+    if (net_up() < 0) {
+        vfs_close(f);
+        vfs_unlink(tmp);
+        dl_state = CAT_DL_FAILED;
+        snprintf(dl_message,sizeof(dl_message),"Network not initialized. Check PS3 Internet Connection.");
         sysThreadExit(0);
         return;
     }
@@ -241,13 +265,15 @@ static void download_worker(void *arg)
     f = vfs_open_read(tmp);
     unsigned char magic[4] = {0};
     int valid = f && vfs_read(f,magic,4) == 4 &&
-                magic[0] == 0x7f && magic[1] == 'P' &&
-                magic[2] == 'K' && magic[3] == 'G';
+               ((!strcmp(dl_ext,"pkg") &&
+                 magic[0]==0x7f && magic[1]=='P' && magic[2]=='K' && magic[3]=='G') ||
+                (!strcmp(dl_ext,"p3t") &&
+                 magic[0]=='P' && magic[1]=='3' && magic[2]=='T' && magic[3]=='F'));
     if (f) vfs_close(f);
     if (!valid || vfs_rename(tmp,full) != 0) {
         vfs_unlink(tmp);
         dl_state = CAT_DL_FAILED;
-        snprintf(dl_message,sizeof(dl_message),"Not a PS3 PKG or failed to save");
+        snprintf(dl_message,sizeof(dl_message),"Invalid PKG/P3T header or failed to save");
         sysThreadExit(0);
         return;
     }
@@ -265,7 +291,8 @@ int catalog_download_start(const catalog_item_t *item)
         dl_thread_created=0;
     }
     snprintf(dl_url,sizeof(dl_url),"%s",item->url);
-    snprintf(dl_file,sizeof(dl_file),"ARCADIA_%08X.pkg",(unsigned)url_fingerprint(item->url));
+    snprintf(dl_ext,sizeof(dl_ext),"%s",catalog_direct_ext(item));
+    snprintf(dl_file,sizeof(dl_file),"ARCADIA_%08X.%s",(unsigned)url_fingerprint(item->url),dl_ext);
     dl_message[0]=0;
     dl_done=dl_total=0;
     dl_cancel=0;
