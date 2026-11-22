@@ -89,7 +89,12 @@ int catalog_set_source(const char *path)
     if (!path || !path[0]) return 0;
     vfs_file_t *f = vfs_open_read(path);
     if (!f) return 0;
+    /* Do not accept the legacy GAMES/TOOLS catalog: platform filters would
+     * otherwise show empty pages without explaining how to fix them. */
+    char version[96] = {0};
+    int64_t got=vfs_read(f,version,sizeof(version)-1);
     vfs_close(f);
+    if (got < 15 || !strstr(version,"ARCADIA CATALOG v2")) return 0;
     snprintf(cat_path, sizeof(cat_path), "%s", path);
     return 1;
 }
