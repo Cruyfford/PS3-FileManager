@@ -642,3 +642,31 @@ int covers_lookup(const char *full, const char *name, int is_dir, char *out, int
     if (st != CV_NONE) return st;
     return queue(sys, id, key);
 }
+
+
+/* Catalog artwork keyed by the catalog's PS3 title ID. Images are optional:
+ * use local covers/<ID>.jpg or .png first, otherwise let the background
+ * cover worker try the GameTDB service and cache the result. */
+int covers_catalog_lookup(const char *title_id, char *out_path, int n)
+{
+    if (!out_path || n <= 0) return CV_NONE;
+    out_path[0] = 0;
+    if (!title_id) return CV_NONE;
+    size_t len = strlen(title_id);
+    if (len < 5 || len > 16) return CV_NONE;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)title_id[i];
+        if (!(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') &&
+            !(ch >= 'a' && ch <= 'z') && ch != '-') return CV_NONE;
+    }
+    char key[200];
+    snprintf(key, sizeof(key), "cat_%s", title_id);
+    int st = cached(key, out_path, n);
+    if (st != CV_NONE) return st;
+    char path[700];
+    snprintf(path, sizeof(path), "%s/%s.jpg", cache_dir, title_id);
+    if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
+    snprintf(path, sizeof(path), "%s/%s.png", cache_dir, title_id);
+    if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
+    return queue(S_PS3, title_id, key);
+}
