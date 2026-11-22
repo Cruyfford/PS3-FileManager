@@ -365,7 +365,6 @@ static int iso_list(src_t *s, uint32_t lba, uint32_t size, int joliet, ient_t **
 }
 
 static uint8_t *xbuf;
-static uint64_t ex_done, ex_last;
 
 static int extract_file(src_t *s, const ient_t *e, sw_t *w, int raw)
 {
