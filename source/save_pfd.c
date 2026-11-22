@@ -35,7 +35,8 @@ int pfd_probe_save(const char *savedir, pfd_probe_info_t *out)
     uint64_t reserved=read_be64(buf+0x68);
     uint64_t used=read_be64(buf+0x70);
     if (!capacity || capacity>2048 || reserved>2048 || used>reserved ||
-        0x60ULL+24ULL+capacity*8ULL+reserved*272ULL>sz) return -1;
+        0x60ULL+24ULL+capacity*8ULL+reserved*272ULL+capacity*20ULL>sz)
+        return -1;
     if (out) {
         out->version=(unsigned)ver;
         out->entries=(unsigned)used;
@@ -62,6 +63,11 @@ int pfd_probe_sfo_only(const char *savedir)
     if (cap>2048) return 0;
     uint64_t off=0x60+24+cap*8+8;
     if (off+65>(uint64_t)n) return 0;
-    return !strncmp((const char *)(data+off),"PARAM.SFO",9) &&
+    /* The single entry must be the exact PARAM.SFO record and must not
+     * have a bogus chaining index which could loop in the signing backend. */
+    const uint64_t entry=off-8;
+    uint64_t chained=read_be64(data+entry);
+    return chained>=info.reserved &&
+           !strncmp((const char *)(data+off),"PARAM.SFO",9) &&
            data[off+9]==0;
 }
