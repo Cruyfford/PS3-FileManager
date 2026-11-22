@@ -1,7 +1,7 @@
 /* =========================================================== Tools: disc copy, saves, space, search
  * (included by main.c — uses its drawing helpers and state) */
 
-enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH };
+enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH, TS_CATALOG };
 static int tl_scr, tl_sel, ops_ret_tools;
 static float tl_anim;
 
@@ -42,15 +42,16 @@ static void tl_spinner(float cx, float cy)
 
 /* ---------------------------------------------------------------- hub */
 static const int tl_items[4][2] = { { S_T_DISC, S_T_DISC_D }, { S_T_SAVES, S_T_SAVES_D }, { S_T_SPACE, S_T_SPACE_D }, { S_T_SEARCH, S_T_SEARCH_D } };
-static const uint32_t tl_cols[4][2] = {
+static const uint32_t tl_cols[5][2] = {
     { RGBA8(64, 120, 255, 255), RGBA8(150, 70, 255, 255) }, { RGBA8(40, 200, 150, 255), RGBA8(40, 120, 200, 255) },
-    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) } };
+    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) },
+    { RGBA8(26, 193, 212, 255), RGBA8(60, 105, 230, 255) } };
 
 static void draw_tools_hub(void)
 {
     tl_title(T(S_TOOLS), NULL);
     float cw = 400, ch = 150, gx = (SCR_W - 2 * cw - 24) / 2, gy = 96;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         float x = gx + (i % 2) * (cw + 24), y = gy + (i / 2) * (ch + 24) + (1 - tl_anim) * 24;
         int on = i == tl_sel;
         uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
@@ -63,8 +64,8 @@ static void draw_tools_hub(void)
         gfx_circle(ix, iy, 26, on ? RGBA8(255, 255, 255, 60) : WITH_ALPHA(ca, 70));
         gfx_circle(ix, iy, 16, on ? RGBA8(255, 255, 255, 90) : WITH_ALPHA(ca, 120));
         gfx_circle(ix, iy, 5, on ? C_TEXT : ca);
-        L_text(x + 96, y + 34, T(tl_items[i][0]), 19, 1, C_TEXT, ALIGN_LEFT);
-        L_text_fit(x + 96, y + 66, cw - 112, T(tl_items[i][1]), 11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+        L_text(x + 96, y + 34, i == 4 ? "ARCADIA Store" : T(tl_items[i][0]), 19, 1, C_TEXT, ALIGN_LEFT);
+        L_text_fit(x + 96, y + 66, cw - 112, i == 4 ? (g_lang ? "كتالوج وروابط PS3" : "PS3 catalog & downloads") : T(tl_items[i][1]), 11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
     }
 }
 
@@ -487,6 +488,162 @@ static void handle_tools_search(void)
     }
 }
 
+
+/* ---------------------------------------------------------------- ARCADIA offline catalog browser
+ * User-supplied TSV file on USB/HDD; does not provide licenses or auto-install.
+ */
+static int arc_category = CAT_GAMES, arc_sel, arc_top, arc_page, arc_confirm;
+static char arc_query[96], arc_source[1024];
+
+static int arc_find_file(void)
+{
+    char p[1024];
+    snprintf(p, sizeof(p), "%s/ARCADIA_PS3_CATALOG.tsv", APP_DIR);
+    if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
+    if (catalog_set_source("/dev_hdd0/ARCADIA_PS3_CATALOG.tsv")) {
+        snprintf(arc_source,sizeof(arc_source),"%s","/dev_hdd0/ARCADIA_PS3_CATALOG.tsv"); return 1;
+    }
+    for (int i = 0; i < vol_count; i++) {
+        if (vols[i].kind != 1) continue;
+        path_join(p,sizeof(p),vols[i].root,"ARCADIA_PS3_CATALOG.tsv");
+        if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
+    }
+    for (int i = 0; i < 8; i++) {
+        snprintf(p,sizeof(p),"/dev_usb%03d/ARCADIA_PS3_CATALOG.tsv",i);
+        if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
+    }
+    arc_source[0] = 0;
+    return 0;
+}
+static void arc_scan(void)
+{
+    arc_sel = arc_top = 0;
+    if (arc_source[0]) catalog_scan(arc_category,arc_query,arc_page);
+}
+static void arc_open(void)
+{
+    arc_page = 0; arc_sel = arc_top = arc_confirm = 0;
+    if (!arc_find_file()) show_toast(g_lang ? "ضع ARCADIA_PS3_CATALOG.tsv في USB" : "Copy ARCADIA_PS3_CATALOG.tsv to USB root");
+    else arc_scan();
+    tl_scr = TS_CATALOG;
+}
+static void draw_tools_catalog(void)
+{
+    const char *cats[4] = {"ALL", "GAMES", "DLC", "THEMES / TOOLS"};
+    int n = catalog_result_count();
+    int matched = catalog_total_matches();
+    char sub[190];
+    snprintf(sub,sizeof(sub),"%s   |   %d %s   |   %d/%d",
+             cats[arc_category],matched,g_lang ? "عنصر" : "items",
+             arc_page+1, (matched+CAT_PAGE_SIZE-1)/CAT_PAGE_SIZE);
+    tl_title("ARCADIA PS3 CATALOG",sub);
+    if (!arc_source[0]) {
+        L_rrect(36,100,SCR_W-72,286,18,C_PANEL);
+        L_text(55,140,g_lang ? "ملف الكتالوج غير موجود" : "Catalog not found",20,1,C_TEXT,ALIGN_LEFT);
+        L_text_fit(55,194,SCR_W-120,"ARCADIA_PS3_CATALOG.tsv",17,1,C_ACC1,ALIGN_LEFT);
+        L_text_fit(55,238,SCR_W-120,g_lang ? "انسخ الملف إلى جذر USB أو مجلد برنامج File Manager" :
+                      "Copy the catalog TSV to a USB root or File Manager USRDIR",13,0,C_DIM,ALIGN_LEFT);
+        return;
+    }
+    char src[180]; snprintf(src,sizeof(src),"%s",arc_source);
+    L_text_fit(28,69,SCR_W-56,src,10,0,C_DIM,ALIGN_LEFT);
+    char q[220]; snprintf(q,sizeof(q),"%s: %s",g_lang?"بحث":"Search",arc_query[0]?arc_query:"-");
+    L_text_fit(28,89,SCR_W-56,q,12,0,C_TEXT,ALIGN_LEFT);
+    if (!n) {
+        L_text(50,210,g_lang ? "لا توجد نتائج" : "No matches",18,1,C_DIM,ALIGN_LEFT);
+    }
+    const int rows = 9;
+    if (arc_sel < arc_top) arc_top = arc_sel;
+    if (arc_sel >= arc_top + rows) arc_top = arc_sel - rows + 1;
+    for (int i = arc_top; i < n && i < arc_top + rows; i++) {
+        const catalog_item_t *r = catalog_result(i);
+        if (!r) continue;
+        float y = 115 + (i-arc_top)*43;
+        int on = i == arc_sel;
+        if (on) L_grad_pill(28,y,SCR_W-56,40,10,WITH_ALPHA(C_ACC1,180),WITH_ALPHA(C_ACC2,180));
+        else L_rrect(28,y,SCR_W-56,40,10,C_PANEL);
+        L_text_fit(45,y+5,SCR_W-270,r->title,14,on,C_TEXT,ALIGN_LEFT);
+        char meta[124]; snprintf(meta,sizeof(meta),"%s  |  %s",r->title_id[0]?r->title_id:"-",r->size);
+        L_text_fit(45,y+23,SCR_W-250,meta,10,0,on?C_TEXT:C_DIM,ALIGN_LEFT);
+        L_text_fit(SCR_W-42,y+14,160,r->kind,10,0,on?C_TEXT:C_DIM,ALIGN_RIGHT);
+    }
+    if (arc_confirm && n) {
+        const catalog_item_t *it = catalog_result(arc_sel);
+        if (it) {
+            L_rrect(28,521,SCR_W-56,49,10,RGBA8(12,43,72,255));
+            L_text_fit(43,527,SCR_W-85,g_lang ? "اضغط X مرة أخرى لتحميل ملف PKG. مطلوب ترخيص قانوني صالح" :
+                       "Press X again to download PKG. A valid license may be required.",12,1,C_TEXT,ALIGN_LEFT);
+            L_text_fit(43,547,SCR_W-85,it->url,10,0,C_DIM,ALIGN_LEFT);
+        }
+    }
+    int state = catalog_download_state();
+    if (state != CAT_DL_IDLE) {
+        uint64_t done=0,total=0;
+        catalog_download_progress(&done,&total);
+        char d[30],t[30],msg[220];
+        fmt_size(done,d,sizeof(d));
+        if (total) fmt_size(total,t,sizeof(t)); else snprintf(t,sizeof(t),"?");
+        snprintf(msg,sizeof(msg),"%s   %s / %s  %s",state==CAT_DL_RUNNING?"Downloading":
+            state==CAT_DL_DONE?"Saved":state==CAT_DL_CANCELLED?"Cancelled":"Failed",
+            d,t,state==CAT_DL_RUNNING?"(Triangle to cancel)":"");
+        L_text_fit(28,583,SCR_W-56,msg,12,0,state==CAT_DL_DONE?RGBA8(100,230,155,255):C_TEXT,ALIGN_LEFT);
+        if (state != CAT_DL_RUNNING) L_text_fit(28,605,SCR_W-56,catalog_download_message(),11,0,C_DIM,ALIGN_LEFT);
+    } else {
+        L_text_fit(28,586,SCR_W-56,g_lang ? "التنزيل المباشر للملفات المدعومة فقط، بدون تثبيت تلقائي أو تراخيص" :
+                   "Direct supported PKG links only; no automatic install or license bypass",11,0,C_DIM,ALIGN_LEFT);
+    }
+}
+static void handle_tools_catalog(void)
+{
+    if (in_pressed & B_CANCEL) { if (arc_confirm) arc_confirm=0; else tl_scr=TS_HUB; return; }
+    if (in_pressed & (B_L1 | B_R1)) {
+        arc_category = (arc_category + (in_pressed & B_L1 ? 3 : 1)) % 4;
+        arc_page = 0; arc_confirm=0; arc_scan(); return;
+    }
+    if (in_pressed & B_SQU) {
+        osk_purpose=9;
+        if (osk_open(g_lang ? "البحث في ARCADIA" : "Search ARCADIA",arc_query)) ui=UI_OSK;
+        return;
+    }
+    if (in_pressed & B_SELECT) {
+        if (catalog_download_state()==CAT_DL_DONE) {
+            for (int i=0;i<vol_count;i++) if (vols[i].kind==0) {vol_sel=i;break;}
+            ui=UI_BROWSE;focus_list=1;
+            open_dir("/dev_hdd0/packages",catalog_download_name());
+        } else if (arc_find_file()) { arc_page=0;arc_scan(); }
+        return;
+    }
+    if (catalog_download_state()==CAT_DL_RUNNING && (in_pressed & B_TRI)) {
+        catalog_download_cancel();
+        show_toast(g_lang ? "إلغاء التحميل..." : "Cancelling download...");
+        return;
+    }
+    int n=catalog_result_count();
+    if (in_active & B_UP) { arc_sel=arc_sel>0?arc_sel-1:n?n-1:0;arc_confirm=0; }
+    if (in_active & B_DOWN) { arc_sel=arc_sel<n-1?arc_sel+1:0;arc_confirm=0; }
+    if ((in_pressed & B_R2) && (arc_page+1)*CAT_PAGE_SIZE<catalog_total_matches()) {
+        arc_page++;arc_confirm=0;arc_scan(); return;
+    }
+    if ((in_pressed & B_L2) && arc_page) {
+        arc_page--;arc_confirm=0;arc_scan(); return;
+    }
+    if ((in_pressed & B_OK) && n) {
+        const catalog_item_t *it=catalog_result(arc_sel);
+        if (!catalog_is_direct_pkg(it)) {
+            show_toast(g_lang ? "رابط صفحة أو مصدر غير موثق: لا يدعم التحميل المباشر" :
+                              "External page or unverified link: no direct download");
+        } else if (catalog_download_state()==CAT_DL_RUNNING) {
+            show_toast(g_lang ? "هناك تحميل جار" : "A download is already active");
+        } else if (!arc_confirm) {
+            arc_confirm=1;
+        } else {
+            if (!catalog_download_start(it))
+                show_toast(g_lang ? "تعذر بدء التحميل" : "Cannot start download");
+            arc_confirm=0;
+        }
+    }
+}
+
 /* ---------------------------------------------------------------- dispatch */
 static void tools_open(void) { tl_scr = TS_HUB; tl_anim = 0; tl_scan_dests(); ui = UI_TOOLS; }
 
@@ -499,6 +656,7 @@ static void draw_tools(void)
         case TS_SAVES: draw_tools_saves(); break;
         case TS_SPACE: draw_tools_space(); break;
         case TS_SEARCH: draw_tools_search(); break;
+        case TS_CATALOG: draw_tools_catalog(); break;
     }
 }
 
@@ -511,6 +669,7 @@ static void draw_tools_hints(void)
         case TS_SAVES: h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP }; h[n++] = (hint_t){ BTN_SQUARE, S_MARK }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
         case TS_SPACE: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_TRIANGLE, S_GO_TO }; break;
         case TS_SEARCH: h[n++] = (hint_t){ ok_icon, S_GO_TO }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; break;
+        case TS_CATALOG: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
     }
     h[n++] = (hint_t){ cancel_icon, S_BACK };
     draw_hints(h, n);
@@ -522,15 +681,16 @@ static void handle_tools(void)
     case TS_HUB: {
         uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
         if (in_pressed & B_CANCEL) { ui = UI_BROWSE; return; }
-        if (in_active & R) tl_sel = (tl_sel + 1) % 4;
-        if (in_active & L) tl_sel = (tl_sel + 3) % 4;
-        if (in_active & (B_UP | B_DOWN)) tl_sel = (tl_sel + 2) % 4;
+        if (in_active & R) tl_sel = (tl_sel + 1) % 5;
+        if (in_active & L) tl_sel = (tl_sel + 4) % 5;
+        if (in_active & (B_UP | B_DOWN)) tl_sel = (tl_sel + 2) % 5;
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
             else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_scan_usb(); sv_scan(); }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
-            else { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
+            else if (tl_sel == 3) { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
+            else arc_open();
         }
         break;
     }
@@ -538,6 +698,7 @@ static void handle_tools(void)
     case TS_SAVES: handle_tools_saves(); break;
     case TS_SPACE: handle_tools_space(); break;
     case TS_SEARCH: handle_tools_search(); break;
+    case TS_CATALOG: handle_tools_catalog(); break;
     }
 }
 
