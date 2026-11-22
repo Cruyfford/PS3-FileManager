@@ -607,7 +607,20 @@ static void handle_tools_saves(void)
                 sv_detail_confirm=0;
                 sv_run(1);
             } else {
-                show_toast("Unavailable: verified PARAM.PFD crypto engine required");
+                pfd_probe_info_t info;
+                int result=pfd_probe_save(sv[sv_sel].path,&info);
+                char msg[200];
+                if (result == 1) {
+                    snprintf(msg,sizeof(msg),
+                        "PFD v%u: %u entries. Crypto engine not installed",
+                        info.version,info.entries);
+                } else if (result==0) {
+                    snprintf(msg,sizeof(msg),"No PARAM.PFD in selected save");
+                } else {
+                    snprintf(msg,sizeof(msg),
+                        "PARAM.PFD missing data or unknown format. No changes made");
+                }
+                show_toast(msg);
             }
         }
         return;
