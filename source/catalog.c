@@ -5,6 +5,7 @@
  */
 #include "catalog.h"
 #include "vfs.h"
+#include "ftp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -208,6 +209,14 @@ static void download_worker(void *arg)
     if (!f) {
         snprintf(dl_message,sizeof(dl_message),"Cannot write to internal HDD (space or permissions)");
         dl_state = CAT_DL_FAILED;
+        sysThreadExit(0);
+        return;
+    }
+    if (net_up() < 0) {
+        vfs_close(f);
+        vfs_unlink(tmp);
+        dl_state = CAT_DL_FAILED;
+        snprintf(dl_message,sizeof(dl_message),"Network not initialized. Check PS3 Internet Connection.");
         sysThreadExit(0);
         return;
     }
