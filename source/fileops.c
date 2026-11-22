@@ -279,6 +279,41 @@ static void pt_cb(uint64_t add, const char *cur)
 
 static void pt_cb_fwd(uint64_t add, const char *cur) { pt_cb(add, cur); }
 
+/* Verify every staged file has the same size as its USB source before
+ * touching the existing save. This detects premature EOF and disconnects. */
+static int verify_staged_tree(const char *src, const char *dst, int depth)
+{
+    if (depth > 32) return OPE_READ;
+    int sdir=0, ddir=0; uint64_t ssize=0, dsize=0;
+    if (vfs_stat(src,&sdir,&ssize)!=0 || vfs_stat(dst,&ddir,&dsize)!=0 ||
+        sdir!=ddir) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+        return OPE_READ;
+    }
+    if (!sdir) {
+        if (ssize!=dsize) {
+            snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+            return OPE_READ;
+        }
+        return OPE_NONE;
+    }
+    vfs_entry_t *entries=malloc(sizeof(vfs_entry_t)*MAX_LIST);
+    if (!entries) return OPE_MEM;
+    int n=vfs_list(src,entries,MAX_LIST),err=OPE_NONE;
+    if (n<0 || n==MAX_LIST) {
+        snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+        err=OPE_READ;
+    }
+    char s[1024],d[1024];
+    for (int i=0; !err && i<n && !cancel_flag; i++) {
+        join(s,sizeof(s),src,entries[i].name);
+        join(d,sizeof(d),dst,entries[i].name);
+        err=verify_staged_tree(s,d,depth+1);
+    }
+    free(entries);
+    return err;
+}
+
 /* Safe restore from USB to the native PS3 save directory.
  * Copy to a private staging folder FIRST. An existing save is moved out of
  * savedata as an untouched backup, and is never overwritten in place.
@@ -330,6 +365,8 @@ static int restore_save_one(const char *src, const char *dest_root, uint64_t sta
 
     int error=copy_tree(src,stage,0);
     if (error || cancel_flag) return error; /* original live save remains unchanged */
+    error=verify_staged_tree(src,stage,0);
+    if (error || cancel_flag) return error;
     join(sfo,sizeof(sfo),stage,"PARAM.SFO");
     if (!vfs_exists(sfo)) {
         snprintf(st.error_path,sizeof(st.error_path),"%s",sfo);
