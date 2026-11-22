@@ -17,9 +17,9 @@ include $(PSL1GHT)/ppu_rules
 
 TARGET		:=	FileManager
 BUILD		:=	build
-SOURCES		:=	source third_party/a52 third_party/makeps3iso third_party/cjson
+SOURCES		:=	source third_party/a52 third_party/makeps3iso third_party/cjson third_party/savesync_pfd
 DATA		:=	data
-INCLUDES	:=	include third_party/a52 third_party/cjson
+INCLUDES	:=	include third_party/a52 third_party/cjson third_party/savesync_pfd
 PKGFILES	:=	$(CURDIR)/pkgfiles
 
 LIBS		:=	$(PROJECT_ROOT)/third_party/fs/lib/libntfs_ext.a $(PROJECT_ROOT)/third_party/fs/lib/libfatfs.a \
