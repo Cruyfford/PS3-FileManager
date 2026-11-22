@@ -82,6 +82,19 @@ Open **Tools → ARCADIA Store**. Use `L1/R1` to switch between **All / PS3 / PS
 **Troubleshooting:** HTTP 403/404 indicates a server refusing/removing the file; a cURL certificate/network error means a connection problem. Check console clock/internet and verify the link on a computer before retrying. Old Sony CDN links are not guaranteed to remain live. Interrupted downloads do not currently resume. User-supplied URLs are not verified individually; download and install only content you are legally entitled to use.
 
 
+## إصلاح استعادة ملفات الحفظ على PS3 HEN
+
+عالج هذا التحديث مسار **Tools → Save Data Backup → USB saves → ✕ Restore** لحماية ملف الحفظ الموجود عند تعطل أو انقطاع النقل.
+
+- عند اختيار تبويب USB، تظهر **Restore to PS3 user: NNNNNNNN**. يمكن اختيار حساب PS3 المستهدف باستخدام يسار/يمين. لم يعد البرنامج يخمّن الحساب بحسب عدد ملفات الحفظ.
+- **اضغط ✕ مرتين:** الأولى لتأكيد اسم الحساب، والثانية لبدء الاستعادة. العملية تنطلق بخيط نقل في الخلفية وتعرض تقدم النسخ.
+- تُنسخ ملفات الحفظ أولًا إلى `/dev_hdd0/CRUYFFORD_RESTORE_STAGING/`، ثم تُفحص الملفات وأحجامها مقارنة بالمصدر. إذا فشلت القراءة أو فصل USB، **لا يمس البرنامج ملفات الحفظ الأصلية**.
+- عند وجود حفظ بنفس الاسم، يحتفظ البرنامج بالحفظ السابق خارج مجلد saves في `/dev_hdd0/CRUYFFORD_SAVE_RESTORE_BACKUPS/<USER_ID>/`، ثم ينقل النسخة المحقّق منها إلى مكانها. في حال فشل النقل النهائي يحاول استرجاع الحفظ السابق تلقائيًا، ولا يحذف النسخة الاحتياطية.
+- لن تستعرض الواجهة ملفات USB بالتزامن مع نقلها في الخلفية، تجنبًا للتعارض المحتمل مع نظام ملفات FAT/exFAT.
+- من الممكن أن تبقى ملفات في مجلد staging إن فشلت العملية؛ لا تحذفها قبل مراجعة نتيجة النقل وحفظ النسخ الأصلية.
+- **المهم:** هذه استعادة *مطابقة للبايتات* لا تفك تشفير `PARAM.PFD` ولا تعيد توقيعه لحساب جديد. إذا حوّلت حفظًا محميًا بين حسابين مختلفين فقد ترفضه اللعبة. قم أولًا بتجربة الحفظ على الحساب الأصلي، واستخدم النسخة الاحتياطية الموجودة لاسترجاعه عند الحاجة.
+- نجح بناء حزمة PS3 على GitHub Actions، لكن يجب اختبار الاستعادة فعليًا على جهاز PS3 HEN. اختبر أولًا حفظًا غير مهم واحتفظ بنسخة USB منفصلة.
+
 ## البناء عبر GitHub Actions
 1. أنشئ مستودعاً جديداً وارفع محتويات هذا المجلد كما هي (بما فيها `.github` و `third_party`).
 2. افتح تبويب **Actions** → آخر تشغيل → حمّل الـ artifact، وفيه `FileManager.pkg` (ثبّته على HEN).
