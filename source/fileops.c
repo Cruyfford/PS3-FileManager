@@ -431,6 +431,57 @@ static void worker(void *arg)
         return;
     }
 
+    if (q_op == OP_SAVE_TRASH) {
+        /* Delete a selected save by moving its entire folder to a recoverable
+         * trash location ON THE SAME FILESYSTEM; never copy+delete on error. */
+        st.files_total=(uint32_t)q_n;
+        if (!vfs_exists(q_dst)) {
+            snprintf(st.error_path,sizeof(st.error_path),"%s",q_dst);
+            err=OPE_OPEN_DST;
+        }
+        const uint64_t stamp=ops_now_ms();
+        for (int i=0; i<q_n && !cancel_flag && !err; i++) {
+            const char *src=q_src[i];
+            const char *name=base_name(src);
+            char sfo[1024], moved[1024];
+            int is_dir=0;
+            size_t plen=strlen(q_dst);
+            int valid_source = strstr(src,"/PS3/SAVEDATA/") ||
+                               strstr(src,"/savedata/");
+            if (!valid_source || !name[0] || strlen(name)>180 ||
+                vfs_stat(src,&is_dir,NULL)!=0 || !is_dir ||
+                vfs_backend(src)!=vfs_backend(q_dst)) {
+                snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+                err=OPE_OPEN_SRC;
+                break;
+            }
+            join(sfo,sizeof(sfo),src,"PARAM.SFO");
+            if (!vfs_exists(sfo)) {
+                snprintf(st.error_path,sizeof(st.error_path),"%s",sfo);
+                err=OPE_OPEN_SRC;
+                break;
+            }
+            if (plen+strlen(name)+28 >= sizeof(moved)) {
+                err=OPE_OPEN_DST;
+                snprintf(st.error_path,sizeof(st.error_path),"%s",q_dst);
+                break;
+            }
+            snprintf(moved,sizeof(moved),"%s/%llu_%02d_%s",
+                     q_dst,(unsigned long long)stamp,i,name);
+            if (vfs_exists(moved) || vfs_rename(src,moved)!=0) {
+                snprintf(st.error_path,sizeof(st.error_path),"%s",src);
+                err=OPE_DELETE;
+                break;
+            }
+            snprintf(st.current,sizeof(st.current),"%s",name);
+            st.files_done++;
+        }
+        st.error=err;
+        st.state=cancel_flag ? OPS_CANCELLED : err ? OPS_ERROR : OPS_DONE;
+        sysThreadExit(0);
+        return;
+    }
+
     if (q_op == OP_DISC || q_op == OP_UNISO) {
         if (q_op == OP_DISC) err = disc_dump(q_cid[0] == '1', q_dst, &cancel_flag, pt_cb, &st.bytes_total, st.error_path, sizeof(st.error_path), q_out, sizeof(q_out));
         else { snprintf(q_out, sizeof(q_out), "%s", q_dst); err = iso_extract(q_src[0], q_dst, &cancel_flag, pt_cb, &st.bytes_total, st.error_path, sizeof(st.error_path)); }
