@@ -109,6 +109,16 @@ Open **Tools → ARCADIA Store**. Use `L1/R1` to switch between **All / PS3 / PS
 - `Copy to Editing Workspace` تنشئ نسخة بعيدة عن ملفات الحفظ الحية لاستخدام محرر HEX، لكنها **لا تفك تشفير PARAM.PFD ولا تعيد توقيعه**. تعديل ملفات حفظ محمية بلا مفاتيح وتوقيع صالح قد يجعلها غير قابلة للتحميل.
 - راجع الحفظ قبل حذفه واختبر الميزة أولًا بحفظ غير مهم على PS3 HEN. نجاح البناء البرمجي لا يثبت تلقائيًا نجاح تشغيل كل نظام ملفات على الجهاز.
 
+## Save Data Manager — five-action menu (crypto integration in progress)
+
+- **Tools → Save Data Manager:** highlight a saved game and press **✕** to open the five-action panel: **Decrypt Save Data**, **Edit Save Data**, **Encrypt Save Data**, **Resign Save Data**, **Backup / Restore**.
+- **Edit Save Data** makes an independent copy in `/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE/` and opens it in the file browser, where the existing Hex Editor can be used. The *original* save is left untouched.
+- **Backup / Restore** executes the existing real USB backup or safe PS3 HDD restoration. Restoring into a PS3 account requires a second ✕ confirmation; the backup/transactional restore process retains the previous save.
+- Press **△** on any save to get the separate **Copy / Editing Copy / Move to Trash** menu implemented in the previous release.
+- **Decrypt / Encrypt / Resign** currently display **LOCKED** and deliberately refuse to modify any file. These are **not yet functional**: they require an independently integrated and tested PS3 `PARAM.PFD` crypto/hash implementation, correct per-file secure-file IDs, and PS3 account/console identifiers. There is no deceptive dummy decryption or fake success message.
+- License integration note: Apollo Save Tool's code is GPLv3. This repository currently carries a GPLv2 license, so upstream source cannot simply be pasted into the application without resolving copyright and license compatibility. The existing license has not been changed.
+- Test the functional edit/backup features on a disposable saved game on PS3 HEN before relying on them. Cryptographic save changes are intentionally disabled until validated.
+
 ## البناء عبر GitHub Actions
 1. أنشئ مستودعاً جديداً وارفع محتويات هذا المجلد كما هي (بما فيها `.github` و `third_party`).
 2. افتح تبويب **Actions** → آخر تشغيل → حمّل الـ artifact، وفيه `FileManager.pkg` (ثبّته على HEN).
