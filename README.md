@@ -1,4 +1,8 @@
-# File Manager — CRUYFFORD (PS3)
+# PS3 File Manager — by [Cruyfford](https://github.com/Cruyfford)
+
+**صاحب المشروع ومطوّره (Project Creator & Developer): [Cruyfford](https://github.com/Cruyfford)**
+
+**Repository:** [Cruyfford/PS3-FileManager](https://github.com/Cruyfford/PS3-FileManager)
 
 مدير ملفات عصري لـ PS3 (HEN و CFW) يقرأ كل الأقراص ويثبّت ملفات PKG.
 
