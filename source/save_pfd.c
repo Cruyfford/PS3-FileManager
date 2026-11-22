@@ -43,3 +43,25 @@ int pfd_probe_save(const char *savedir, pfd_probe_info_t *out)
     }
     return 1;
 }
+
+/* Only the PARAM.SFO-only case can be resigned without per-file Secure File IDs.
+ * Never take this check as authorization to re-encrypt a protected game file. */
+int pfd_probe_sfo_only(const char *savedir)
+{
+    pfd_probe_info_t info;
+    if (pfd_probe_save(savedir,&info)!=1 || info.entries!=1) return 0;
+    char path[1024];
+    snprintf(path,sizeof(path),"%s/PARAM.PFD",savedir);
+    vfs_file_t *f=vfs_open_read(path);
+    if (!f) return 0;
+    unsigned char data[32768];
+    int64_t n=vfs_read(f,data,sizeof(data));
+    vfs_close(f);
+    if (n<120) return 0;
+    uint64_t cap=read_be64(data+0x60);
+    if (cap>2048) return 0;
+    uint64_t off=0x60+24+cap*8+8;
+    if (off+65>(uint64_t)n) return 0;
+    return !strncmp((const char *)(data+off),"PARAM.SFO",9) &&
+           data[off+9]==0;
+}
