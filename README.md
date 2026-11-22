@@ -69,30 +69,18 @@
 | النسخ الاحتياطي الشامل | لم يُنفذ بعد (النسخ الحالي للحفظ موجود) |
 | سلة محذوفات | لم يُنفذ بعد |
 
-## كتالوج ARCADIA داخل PS3 File Manager
+## ARCADIA Store V2 — English-only catalog
 
-تعرض الميزة بيانات كتالوج المستخدم من ملف مستقل، ولا تستبدل حقوق التوزيع والتراخيص.
+The Store requires **ARCADIA_PS3_CATALOG.tsv V2** (the old V1 file with broad GAMES/TOOLS categories is no longer accepted). Copy the TSV file from the English V2 ZIP to the root of a FAT32 USB drive, or copy to `/dev_hdd0/ARCADIA_PS3_CATALOG.tsv`, or to `/dev_hdd0/game/CRPK00001/USRDIR/ARCADIA_PS3_CATALOG.tsv`.
 
-**إضافة الملف:** انسخ `ARCADIA_PS3_CATALOG.tsv` من حزمة USB إلى جذر فلاش USB المتصل بـ PS3، أو إلى أحد المسارين:
-- `/dev_hdd0/ARCADIA_PS3_CATALOG.tsv`
-- `/dev_hdd0/game/CRPK00001/USRDIR/ARCADIA_PS3_CATALOG.tsv`
+Open **Tools → ARCADIA Store**. Use `L1/R1` to switch between **All / PS3 / PS2 / PSP / PS1 / Apps / Themes / DLC**. Use `□` to search by English title or Title ID, `L2/R2` to change pages, and `R3` to retry a missing cover. Names/sections in the Store are English, regardless of application language.
 
-**داخل البرنامج:** `Tools → ARCADIA Store`. يدعم Games وDLC وThemes/Tools وAll، والبحث بعنوان اللعبة أو Title ID، وتصفح النتائج 80 عنصرًا في الصفحة دون تحميل 11 ألف سجل في الذاكرة.
+**Downloads:** Press `✕` on a supported *direct* `.pkg` or `.p3t` link. A progress bar and detailed failure message remain above the controls, inside the PS3's 848×512 screen. Downloads are saved under `/dev_hdd0/packages/ARCADIA_XXXXXXXX.pkg` or `.p3t`; `△` cancels, and `SELECT` opens the completed file location. PKG/P3T signature checks reject HTML error pages and invalid files. No auto-install or DRM/activation bypass is performed. Sources classified `external_page` are **not** direct downloads; MediaFire links require opening the page outside the PS3 and resolving the real link there.
 
-**التحكم:** `L1/R1` تغيير القسم؛ `□` البحث؛ `L2/R2` تغيير الصفحة؛ `✕` مرة واحدة لبدء تنزيل PKG مباشر مدعوم؛ `△` لإلغاء التحميل؛ `SELECT` لفتح مجلد الملفات المنزلة.
+**Covers:** The Store tries local `USRDIR/covers/<TITLE_ID>.jpg` or `.png` first, then attempts PS3 artwork (GameTDB) or PS1/PS2 artwork from platform-appropriate repositories. You can manually place matching artwork in that covers folder. A generic platform tile is displayed when no artwork is available. Network artwork is best-effort, not guaranteed for PSN, PSP, Apps, Themes and DLC. Background downloads require image fetching to be enabled in Settings.
 
-تُحفظ الملفات المدعومة في `/dev_hdd0/packages/ARCADIA_XXXXXXXX.pkg` دون تثبيت تلقائي، مع شريط تقدم وفحص ترويسة PKG. روابط MediaFire المصنفة `external_page` والروابط غير الموثقة لا تدعم التنزيل المباشر، ولا يتم استخراج روابط من صفحات الويب.
+**Troubleshooting:** HTTP 403/404 indicates a server refusing/removing the file; a cURL certificate/network error means a connection problem. Check console clock/internet and verify the link on a computer before retrying. Old Sony CDN links are not guaranteed to remain live. Interrupted downloads do not currently resume. User-supplied URLs are not verified individually; download and install only content you are legally entitled to use.
 
-**حدود النسخة:** الروابط غير مفحوصة واحدًا واحدًا، وقد يتوقف بعضها أو يتطلب حقوقًا أو تراخيص. لا توجد ميزة استكمال تحميل جزئي حاليًا. هذه الميزة لا توفر RAP أو تجاوز DRM أو تثبيتًا آليًا. يُرجى تنزيل المحتوى الذي تملك حق استخدامه فقط.
-
-
-### إصلاح واجهة ARCADIA (PS3 848×512)
-
-- صفحة **Tools** تعرض خمس بطاقات صغيرة في صفين (3 في الأعلى و2 في الأسفل) دون قص بطاقة المتجر.
-- كل صف لعبة يعرض صورة مصغرة بجانب الاسم عند توفر غلاف؛ تُقرأ صور `covers/<TITLE_ID>.jpg` أو `.png` المحلية أولًا، وإلا تتم محاولة تحميل غلاف GameTDB في الخلفية وحفظه في مجلد `covers` الخاص بالبرنامج. قد لا تتوفر صور لبعض ألعاب PSN، فتظهر أيقونة PS3 بدلًا منها.
-- تحميل PKG يبدأ بضغطة `✕` واحدة على رابط مباشر مدعوم؛ يظهر التقدم أو سبب الفشل أسفل القائمة *داخل حدود الشاشة*؛ `△` يلغي التنزيل الجاري.
-- تستخدم عمليات الكتابة مسار VFS الأصلي المتوافق مع `/dev_hdd0` بدلًا من stdio. تظهر أخطاء HTTP وcURL عند فشل الاتصال. لم تُختبر الخوادم أو التحميل على جهاز PS3 فعلي.
-- روابط MediaFire التي تنتهي بصفحة ويب لا تصبح روابط PKG مباشرة بمجرد الضغط على `✕`، ولا تُنفذ عمليات تجاوز للترخيص أو حماية الألعاب.
 
 ## البناء عبر GitHub Actions
 1. أنشئ مستودعاً جديداً وارفع محتويات هذا المجلد كما هي (بما فيها `.github` و `third_party`).
