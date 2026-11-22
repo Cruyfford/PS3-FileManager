@@ -246,6 +246,7 @@ static void sv_scan(void)
 /* Save editing workspace: copies selected save away from the live user profile.
  * This does NOT decrypt encrypted PFD files or resign hashes. */
 static int sv_work_pending;
+static int sv_work_completed;
 static char sv_work_path[1024];
 static void sv_copy_workspace(void)
 {
@@ -259,6 +260,7 @@ static void sv_copy_workspace(void)
     snprintf(src[0], sizeof(src[0]), "%s", sv[sv_sel].path);
     snprintf(sv_work_path, sizeof(sv_work_path), "%s/%s", dst, sv[sv_sel].dir);
     sv_work_pending = 1;
+    sv_work_completed = 0;
     ops_ret_tools = 1;
     if (ops_start(OP_COPY, src, 1, dst)) open_modal(UI_PROGRESS_OPS);
     else { sv_work_pending = 0; ops_ret_tools = 0; show_toast(T(S_SAVE_WORK_FAIL)); }
@@ -544,7 +546,7 @@ static void tools_after_ops(void)
 {
     if (sv_work_pending) {
         sv_work_pending = 0;
-        if (vfs_exists(sv_work_path)) { open_dir(sv_work_path, NULL); tl_scr = TS_HUB; ui = UI_BROWSE; }
+        if (sv_work_completed && vfs_exists(sv_work_path)) { open_dir(sv_work_path, NULL); tl_scr = TS_HUB; ui = UI_BROWSE; }
         else show_toast(T(S_SAVE_WORK_FAIL));
         return;
     }
