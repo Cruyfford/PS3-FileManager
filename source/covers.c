@@ -470,6 +470,10 @@ static int download(CURL *c, const job_t *j, mem_t *m)
     if (j->sys == S_PS3) {
         const char *reg[] = { "US", "EN", "JA", "FR", "DE" };
         for (int r = 0; r < 5; r++) {
+            snprintf(url, sizeof(url), "http://art.gametdb.com/ps3/coverM/%s/%s.jpg", reg[r], j->id);
+            if (fetch(c, url, m)) return 1;
+        }
+        for (int r = 0; r < 5; r++) {
             snprintf(url, sizeof(url), "https://art.gametdb.com/ps3/cover/%s/%s.jpg", reg[r], j->id);
             if (fetch(c, url, m)) return 1;
         }
@@ -670,4 +674,52 @@ int covers_catalog_lookup(const char *title_id, char *out_path, int n)
     int st = cached(key, out_path, n);
     if (st != CV_NONE) return st;
     return queue(S_PS3, title_id, key);
+}
+
+/* Platform-specific catalog lookup. PS1/PS2 serials are stored without a dash
+ * in the TSV (e.g. SLUS01272), while the cover repositories use SLUS-01272. */
+int covers_catalog_lookup_platform(const char *title_id, const char *title,
+                                   const char *platform, char *out, int n)
+{
+    if (!out || n < 1) return CV_NONE;
+    out[0]=0;
+    if (!platform || !strcmp(platform,"PS3") || !strcmp(platform,"DLC"))
+        return covers_catalog_lookup(title_id,out,n);
+    if (strcmp(platform,"PS1") && strcmp(platform,"PS2")) return CV_NONE;
+    int sys=!strcmp(platform,"PS1") ? S_PS1 : S_PS2;
+    char id[160], key[200], local[700];
+    if (title_id && strlen(title_id)>=9 && strlen(title_id)<32 &&
+        ((title_id[0]=='S' && title_id[1]=='L') ||
+         (title_id[0]=='S' && title_id[1]=='C'))) {
+        snprintf(id,sizeof(id),"%.4s-%s",title_id,title_id+4);
+    } else if (title && *title) {
+        snprintf(id,sizeof(id),"%s",title);
+    } else if (title_id && *title_id) {
+        snprintf(id,sizeof(id),"%s",title_id);
+    } else return CV_NONE;
+    sanitize(title_id && *title_id ? title_id : id,local,sizeof(local));
+    snprintf(key,sizeof(key),"cat_%s_%s",platform,local);
+    if (title_id && *title_id) {
+        snprintf(local,sizeof(local),"%s/%s.jpg",cache_dir,title_id);
+        if (vfs_exists(local)) { snprintf(out,n,"%s",local); return CV_CACHED; }
+        snprintf(local,sizeof(local),"%s/%s.png",cache_dir,title_id);
+        if (vfs_exists(local)) { snprintf(out,n,"%s",local); return CV_CACHED; }
+    }
+    int state=cached(key,out,n);
+    if (state != CV_NONE) return state;
+    return queue(sys,id,key);
+}
+
+void covers_catalog_retry(const char *title_id, const char *platform)
+{
+    if (!platform || !title_id || !*title_id) return;
+    char key[200], id[180], bad[700];
+    if (!strcmp(platform,"PS3") || !strcmp(platform,"DLC"))
+        snprintf(key,sizeof(key),"cat_%s",title_id);
+    else {
+        sanitize(title_id,id,sizeof(id));
+        snprintf(key,sizeof(key),"cat_%s_%s",platform,id);
+    }
+    snprintf(bad,sizeof(bad),"%s/%s.none",cache_dir,key);
+    if (vfs_exists(bad)) vfs_unlink(bad);
 }
