@@ -12,6 +12,7 @@
 #include <sys/thread.h>
 #include <sysutil/sysutil.h>
 #include <lv2/process.h>
+#include <ppu-lv2.h>
 #include <io/pad.h>
 #include <ya2d/ya2d.h>
 
@@ -35,6 +36,9 @@
 #include "theme.h"
 #include "disc.h"
 #include "tools.h"
+#include "subdl.h"
+#include "hubapi.h"
+#define SUBKEY_FILE APP_DIR "/subdl_key.txt"
 #define SYS_WEBMAN 100
 #define SYS_MOVIAN 101
 
@@ -507,10 +511,58 @@ static char movian_self[1400];
 static int launch_sys;
 static char launch_core[1400], launch_core_name[64], launch_src[1400];
 static char pending_self[1400], pending_arg[1400];
+
+/* ---------- task queue, background progress, power off when done ---------- */
+#define JQ_MAX 8
+typedef struct { int op, n; char (*src)[1024]; char dst[1024]; } qjob_t;
+static qjob_t jq[JQ_MAX];
+static int jq_n, ops_bg, shutdown_after, shut_countdown, power_off;
+
+static int jq_push(int op, char srcs[][1024], int n, const char *dst)
+{
+    if (jq_n >= JQ_MAX || n <= 0) return 0;
+    qjob_t *j = &jq[jq_n];
+    j->src = malloc((size_t)n * 1024);
+    if (!j->src) return 0;
+    memcpy(j->src, srcs, (size_t)n * 1024);
+    j->op = op; j->n = n;
+    snprintf(j->dst, sizeof(j->dst), "%s", dst ? dst : "");
+    jq_n++;
+    return 1;
+}
+
+static int jq_start_next(void)
+{
+    while (jq_n) {
+        qjob_t j = jq[0];
+        memmove(jq, jq + 1, sizeof(qjob_t) * (jq_n - 1));
+        jq_n--;
+        int ok = ops_start(j.op, j.src, j.n, j.op == OP_DELETE ? NULL : j.dst);
+        free(j.src);
+        if (ok) return 1;
+    }
+    return 0;
+}
+
+/* start now, or queue behind the running task */
+static int ops_go(int op, char srcs[][1024], int n, const char *dst);
 static char osk_old[256];
 
 static void show_toast(const char *s) { snprintf(toast, sizeof(toast), "%s", s); toast_until = gfx_frame() + 150; }
 static void open_modal(int m) { prev_ui = ui; ui = m; modal_anim = 0.6f; }
+static void show_toast(const char *s);
+static int ops_go(int op, char srcs[][1024], int n, const char *dst)
+{
+    if (ops_status()->state == OPS_RUNNING || ops_bg) {
+        if (!jq_push(op, srcs, n, dst)) return 0;
+        char m[96]; snprintf(m, sizeof(m), T(S_QUEUED), jq_n); show_toast(m);
+        return 1;
+    }
+    if (ops_status()->state != OPS_IDLE) ops_reset();
+    if (!ops_start(op, srcs, n, dst)) return 0;
+    open_modal(UI_PROGRESS_OPS);
+    return 1;
+}
 
 static void sys_cb(u64 status, u64 param, void *ud)
 {
@@ -1084,8 +1136,21 @@ static void draw_progress_install(void)
     if (s->speed > 0) { char t[24]; fmt_time((uint32_t)((s->all_total - s->all_done) / s->speed), t, sizeof(t)); snprintf(eta, sizeof(eta), T(S_LEFT), t); }
     snprintf(line, sizeof(line), "%s / %s   \xC2\xB7   %s/s   \xC2\xB7   %s", done, tot, spd, eta);
     gfx_text(SCR_W / 2, y + 174, line, 12, 0, C_DIM, ALIGN_CENTER);
-    float hx = SCR_W / 2 - 40, bwi = gfx_button_icon(hx, y + h - 30, cancel_icon, 18);
-    gfx_text(hx + bwi + 6, y + h - 29, T(S_CANCEL), 12, 0, C_DIM, ALIGN_LEFT);
+    {
+        char sd[96]; snprintf(sd, sizeof(sd), "%s %s", T(S_SHUTDOWN_AFTER), shutdown_after ? "\xE2\x9C\x93" : "");
+        char qn[48] = ""; if (jq_n) snprintf(qn, sizeof(qn), T(S_QUEUE_N), jq_n);
+        float tw = 18 + 6 + gfx_text_width(T(S_CANCEL), 12, 0) + 24 + 18 + 6 + gfx_text_width(sd, 12, 0) + 24 + 18 + 6 + gfx_text_width(T(S_BG_HIDE), 12, 0);
+        float hx = SCR_W / 2 - tw / 2;
+        float bwi = gfx_button_icon(hx, y + h - 30, BTN_TRIANGLE, 18);
+        gfx_text(hx + bwi + 6, y + h - 29, T(S_BG_HIDE), 12, 0, C_DIM, ALIGN_LEFT);
+        hx += bwi + 6 + gfx_text_width(T(S_BG_HIDE), 12, 0) + 24;
+        bwi = gfx_button_icon(hx, y + h - 30, BTN_SQUARE, 18);
+        gfx_text(hx + bwi + 6, y + h - 29, sd, 12, shutdown_after, shutdown_after ? C_OKC : C_DIM, ALIGN_LEFT);
+        hx += bwi + 6 + gfx_text_width(sd, 12, 0) + 24;
+        bwi = gfx_button_icon(hx, y + h - 30, cancel_icon, 18);
+        gfx_text(hx + bwi + 6, y + h - 29, T(S_CANCEL), 12, 0, C_DIM, ALIGN_LEFT);
+        if (qn[0]) gfx_text(SCR_W / 2, y + 196, qn, 11, 1, RGBA8(255, 200, 120, 255), ALIGN_CENTER);
+    }
 }
 
 static void draw_progress_ops(void)
@@ -1728,8 +1793,8 @@ static void draw_video(void)
 }
 
 /* ---------- player settings panel and subtitle file picker ---------- */
-enum { VP_SUBTRACK, VP_LOADSUB, VP_SUBSIZE, VP_SUBCOLOR, VP_SUBPOS, VP_SUBBG, VP_SUBDELAY, VP_AUDIO, VP_ASPECT, VP_DEBUG, VP_COUNT };
-static const int vp_label[VP_COUNT] = { S_PL_SUBTRACK, S_PL_LOADSUB, S_PL_SUBSIZE, S_PL_SUBCOLOR, S_PL_SUBPOS, S_PL_SUBBG, S_PL_SUBDELAY, S_PL_AUDIO, S_PL_ASPECT, S_PL_DEBUG };
+enum { VP_SUBTRACK, VP_LOADSUB, VP_DLSUB, VP_SUBKEY, VP_SUBSIZE, VP_SUBCOLOR, VP_SUBPOS, VP_SUBBG, VP_SUBDELAY, VP_AUDIO, VP_ASPECT, VP_DEBUG, VP_COUNT };
+static const int vp_label[VP_COUNT] = { S_PL_SUBTRACK, S_PL_LOADSUB, S_PL_DLSUB, S_PL_SUBKEY, S_PL_SUBSIZE, S_PL_SUBCOLOR, S_PL_SUBPOS, S_PL_SUBBG, S_PL_SUBDELAY, S_PL_AUDIO, S_PL_ASPECT, S_PL_DEBUG };
 
 static void vp_value(int i, char *o, int n)
 {
@@ -1744,6 +1809,7 @@ static void vp_value(int i, char *o, int n)
     case VP_AUDIO: { int c = video_audio_current(); snprintf(o, n, "%s", c < 0 ? "—" : video_audio_label(c)); break; }
     case VP_ASPECT: { static const int nm[3] = { S_ASP_FIT, S_ASP_FILL, S_ASP_STRETCH }; snprintf(o, n, "%s", T(nm[pp.aspect % 3])); break; }
     case VP_DEBUG: snprintf(o, n, "%s", T(pp.debug ? S_ON : S_OFF)); break;
+    case VP_SUBKEY: snprintf(o, n, "%s", T(subdl_key()[0] ? S_SET : S_NOT_SET)); break;
     }
 }
 
@@ -1825,17 +1891,42 @@ static void draw_vid_panel(void)
     if (vid_panel == 1) {
         gfx_text(tx, 22, T(S_PL_SETTINGS), 18, 1, C_TEXT, al);
         for (int i = 0; i < VP_COUNT; i++) {
-            float iy = 62 + i * 38;
+            float iy = 56 + i * 37;
             int s = i == vp_sel;
             if (s) gfx_rrect(x + 10, iy - 4, w - 20, 34, 10, RGBA8(110, 100, 230, 90));
             gfx_text_fit(tx, iy + 4, w * 0.5f, T(vp_label[i]), 13, s, s ? C_TEXT : C_DIM, al);
             char v[160]; vp_value(i, v, sizeof(v));
             if (v[0]) {
                 gfx_text_fit(vx, iy + 4, w * 0.42f, v, 13, 1, s ? RGBA8(175, 169, 236, 255) : C_TEXT, ar);
-                if (s && i != VP_LOADSUB) {
-                    float ax = RTL() ? vx + w * 0.42f + 4 : vx - w * 0.42f - 14;
-                    (void)ax;
-                }
+            }
+        }
+    } else if (vid_panel == 3) {
+        gfx_text(tx, 22, T(S_SUBS_ONLINE), 18, 1, C_TEXT, al);
+        gfx_text_fit(tx, 48, w - 48, subdl_query(), 11, 0, C_DIM, al);
+        int stt = subdl_state();
+        if (stt == SUBDL_SEARCHING || stt == SUBDL_DOWNLOADING) {
+            float tt = gfx_frame() / 60.0f, cx = x + w / 2;
+            for (int i = 0; i < 8; i++) { float an = tt * 5 + i * 0.785f; gfx_circle(cx + cosf(an) * 12, 150 + sinf(an) * 12, 2.4f, WITH_ALPHA(C_TEXT, 40 + i * 26)); }
+            gfx_text(cx, 180, T(stt == SUBDL_SEARCHING ? S_SUBS_SEARCHING : S_SUBS_DOWNLOADING), 13, 0, C_DIM, ALIGN_CENTER);
+        } else if (stt == SUBDL_ERROR && !subdl_count()) {
+            gfx_text_fit(x + w / 2, 130, w - 40, T(S_SUBS_NONE), 14, 1, C_TEXT, ALIGN_CENTER);
+            if (strcmp(subdl_error(), "0")) gfx_text_fit(x + w / 2, 156, w - 40, subdl_error(), 11, 0, C_DIM, ALIGN_CENTER);
+        }
+        if (!subdl_key()[0]) gfx_text_fit(x + w / 2, SCR_H - 70, w - 30, T(S_SUBS_KEYHINT), 10, 0, RGBA8(255, 200, 120, 255), ALIGN_CENTER);
+        if (stt == SUBDL_RESULTS || (stt == SUBDL_ERROR && subdl_count())) {
+            int n = subdl_count(), rows = 10;
+            if (pk_sel >= n) pk_sel = n - 1;
+            if (pk_sel < pk_top) pk_top = pk_sel;
+            if (pk_sel >= pk_top + rows) pk_top = pk_sel - rows + 1;
+            for (int k = pk_top; k < n && k < pk_top + rows; k++) {
+                const subres_t *r = subdl_get(k);
+                float iy = 74 + (k - pk_top) * 36;
+                int sl = k == pk_sel;
+                if (sl) gfx_rrect(x + 10, iy - 4, w - 20, 32, 10, RGBA8(110, 100, 230, 90));
+                uint32_t lc = !strcasecmp(r->lang, "ar") ? RGBA8(60, 200, 140, 255) : RGBA8(90, 140, 255, 255);
+                gfx_rrect(RTL() ? x + w - 50 : x + 18, iy + 1, 32, 18, 9, lc);
+                gfx_text(RTL() ? x + w - 34 : x + 34, iy + 3, r->lang, 10, 1, C_TEXT, ALIGN_CENTER);
+                gfx_text_fit(RTL() ? x + w - 60 : x + 58, iy + 3, w - 90, r->title, 12, sl, sl ? C_TEXT : C_DIM, al);
             }
         }
     } else {
@@ -1871,9 +1962,41 @@ static void handle_vid_panel(void)
                 pk_open(d);
                 if (!pk_n && pk_dir[0]) pk_open("");
                 vid_panel = 2;
+            } else if (vp_sel == VP_DLSUB) {
+                if (video_state() == VID_PLAYING) video_toggle_pause();
+                const char *bn = strrchr(vid_path, '/');
+                subdl_search(bn ? bn + 1 : vid_path);
+                pk_sel = 0; pk_top = 0;
+                vid_panel = 3;
+            } else if (vp_sel == VP_SUBKEY) {
+                if (video_state() == VID_PLAYING) video_toggle_pause();
+                osk_purpose = 8;
+                if (osk_open(T(S_PL_SUBKEY), subdl_key())) ui = UI_OSK;
             } else vp_change(vp_sel, 1);
         }
         if (in_pressed & (B_CANCEL | B_START)) vid_panel = 0;
+        return;
+    }
+    if (vid_panel == 3) {
+        int n = subdl_count(), stt = subdl_state();
+        if (stt == SUBDL_READY) {
+            if (video_add_subtitle_file(subdl_result())) { show_toast(T(S_SUB_LOADED)); vid_panel = 0; if (video_state() == VID_PAUSED) video_toggle_pause(); }
+            else show_toast(T(S_SUB_LOAD_FAIL));
+            subdl_ack();
+            return;
+        }
+        if (stt == SUBDL_ERROR && n) { show_toast(subdl_error()[0] ? subdl_error() : T(S_SUB_LOAD_FAIL)); subdl_ack(); }
+        if (in_pressed & B_CANCEL) { vid_panel = 1; return; }
+        if (in_pressed & B_START) { vid_panel = 0; return; }
+        if (stt == SUBDL_SEARCHING || stt == SUBDL_DOWNLOADING || !n) return;
+        if (in_active & B_DOWN) pk_sel = (pk_sel + 1) % n;
+        if (in_active & B_UP) pk_sel = (pk_sel + n - 1) % n;
+        if (in_pressed & B_OK) {
+            char base[1400]; snprintf(base, sizeof(base), "%s", vid_path);
+            char *dot = strrchr(base, '.'), *sl = strrchr(base, '/');
+            if (dot && (!sl || dot > sl)) *dot = 0;
+            subdl_download(pk_sel, base);
+        }
         return;
     }
     /* picker */
@@ -2352,6 +2475,7 @@ static void do_rescan(void)
     native_usb_mask = usb_mask();
     usb_dev_mask = vfs_usb_device_mask();
     ftp_set_volumes(vols, vol_count);
+    hub_set_volumes(vols, vol_count);
     int idx = 0;
     for (int i = 0; i < vol_count; i++) if (!strcmp(vols[i].root, cur_root)) idx = i;
     if (!cur_root[0]) {
@@ -2463,7 +2587,7 @@ static void run_menu_action(int m)
         { char t[96]; snprintf(t, sizeof(t), clip_op == OP_MOVE ? T(S_CLIP_CUT) : T(S_CLIP_COPY), clip_n); show_toast(t); }
         break;
     case M_PASTE:
-        if (ops_start(clip_op, clip, clip_n, cwd)) open_modal(UI_PROGRESS_OPS);
+        ops_go(clip_op, clip, clip_n, cwd);
         break;
     case M_RENAME:
         if (!ent_count) break;
@@ -2563,6 +2687,7 @@ static void handle_settings(void)
         else if (set_sel == 2) { cfg.del = !cfg.del; save_settings(); }
         else if (set_sel == 3) {
             cfg.ftp = !cfg.ftp; save_settings();
+            if (cfg.ftp) hub_start(); else hub_stop();
             if (cfg.ftp) {
                 if (!ftp_start()) {
                     char m[160]; snprintf(m, sizeof(m), "%s  [%s]", T(S_FTP_FAIL), ftp_error());
@@ -2610,6 +2735,11 @@ static void handle_osk(void)
         else if (!sr_q[0] || !search_count()) tl_scr = TS_HUB;
         return;
     }
+    if (osk_purpose == 8) {
+        ui = UI_VIDEO;
+        if (r == OSK_RESULT_OK) subdl_save_key(SUBKEY_FILE, out);
+        return;
+    }
     if (osk_purpose == 6 || osk_purpose == 7) {
         ui = UI_HEX;
         if (r == OSK_RESULT_OK && out[0]) { if (osk_purpose == 6) hex_find_text(out); else hex_write_text(out); }
@@ -2651,11 +2781,13 @@ int main(void)
     vfs_init();
 
     if (cfg.ftp && !ftp_start()) cfg.ftp = 0;
+    if (cfg.ftp) hub_start();
 
     ya2d_paddata[0].ANA_L_H = 0x80;
     ya2d_paddata[0].ANA_L_V = 0x80;
     ents = calloc(MAX_ENTRIES, sizeof(entry_t));
     covers_init(APP_DIR "/covers");
+    subdl_load_key(SUBKEY_FILE);
     covers_enable(cfg.covers);
     loader_start();
     raw = calloc(MAX_ENTRIES, sizeof(vfs_entry_t));
@@ -2673,6 +2805,46 @@ int main(void)
         if (ui == UI_BROWSE && gfx_frame() >= next_usb_check) {
             if (usb_mask() != native_usb_mask || vfs_usb_device_mask() != usb_dev_mask) ui = UI_SCANNING;
             next_usb_check = gfx_frame() + 120;
+        }
+
+        /* phone link: install requests and status */
+        {
+            char ip[1024];
+            if (inst_status()->state != INST_RUNNING && ops_status()->state != OPS_RUNNING && (ui == UI_BROWSE || ui == UI_GAMES || ui == UI_TOOLS) && hub_take_install(ip, sizeof(ip))) {
+                static inst_job_t hj[1];
+                memset(hj, 0, sizeof(hj));
+                snprintf(hj[0].path, sizeof(hj[0].path), "%s", ip);
+                const char *bn = strrchr(ip, '/'); bn = bn ? bn + 1 : ip;
+                snprintf(hj[0].name, sizeof(hj[0].name), "%s", bn);
+                snprintf(hj[0].title, sizeof(hj[0].title), "%s", bn);
+                int d = 0; uint64_t sz = 0; vfs_stat(ip, &d, &sz); hj[0].size = sz;
+                inst_reset();
+                if (inst_start(hj, 1, cfg.mode, 0)) { games_mode = 0; open_modal(UI_PROGRESS_INSTALL); }
+            }
+            if ((gfx_frame() & 31) == 0 && hub_running()) {
+                char js[600];
+                const inst_status_t *is = inst_status(); const ops_status_t *os = ops_status();
+                if (is->state == INST_RUNNING) snprintf(js, sizeof(js), "{\"busy\":true,\"task\":\"install\",\"name\":\"%.100s\",\"done\":%llu,\"total\":%llu}", is->current_name, (unsigned long long)is->all_done, (unsigned long long)is->all_total);
+                else if (os->state == OPS_RUNNING) snprintf(js, sizeof(js), "{\"busy\":true,\"task\":\"copy\",\"name\":\"%.100s\",\"done\":%llu,\"total\":%llu,\"queue\":%d}", os->current, (unsigned long long)os->bytes_done, (unsigned long long)os->bytes_total, jq_n);
+                else snprintf(js, sizeof(js), "{\"busy\":false}");
+                for (char *c = js; *c; c++) if (*c == '\\') *c = '/';
+                hub_set_status(js);
+            }
+        }
+        /* background task finished? */
+        if (ops_bg && ops_status()->state != OPS_RUNNING) {
+            const ops_status_t *os = ops_status();
+            if (os->state == OPS_DONE && jq_n) { ops_reset(); jq_start_next(); }
+            else if (os->state == OPS_DONE) {
+                ops_bg = 0; ops_reset(); show_toast(T(S_ALL_DONE));
+                if (ui == UI_BROWSE) refresh_keep();
+                if (shutdown_after) shut_countdown = 600;
+            } else if (ui == UI_BROWSE) { ops_bg = 0; open_modal(UI_RESULT_OPS); }
+        }
+        if (shut_countdown) {
+            if (in_pressed & B_CANCEL) { shut_countdown = 0; shutdown_after = 0; in_pressed = 0; }
+            else if (--shut_countdown == 0) { power_off = 1; quit_req = 1; }
+            else in_pressed = in_active = 0;
         }
 
         switch (ui) {
@@ -2702,17 +2874,24 @@ int main(void)
                 else {
                     static char targets[OPS_MAX_SRC][1024];
                     int n = collect_targets(targets, OPS_MAX_SRC, 0);
-                    if (ops_start(OP_DELETE, targets, n, NULL)) open_modal(UI_PROGRESS_OPS); else ui = UI_BROWSE;
+                    ui = UI_BROWSE;
+                    ops_go(OP_DELETE, targets, n, NULL);
                 }
             }
             break;
         }
         case UI_PROGRESS_INSTALL:
             if (in_pressed & B_CANCEL) inst_cancel();
+            if (in_pressed & B_SQU) shutdown_after = !shutdown_after;
+            if (inst_status()->state == INST_DONE && shutdown_after) { inst_reset(); ui = UI_BROWSE; refresh_keep(); shut_countdown = 600; break; }
             if (inst_status()->state != INST_RUNNING) { result_sel = 0; open_modal(UI_RESULT_INSTALL); }
             break;
         case UI_PROGRESS_OPS:
-            if (in_pressed & B_CANCEL) ops_cancel();
+            if (in_pressed & B_CANCEL) { ops_cancel(); for (int i = 0; i < jq_n; i++) free(jq[i].src); jq_n = 0; }
+            if (in_pressed & B_SQU) shutdown_after = !shutdown_after;
+            if ((in_pressed & B_TRI) && !ops_ret_tools && !play_after_copy && !thm_installing) { ops_bg = 1; ui = UI_BROWSE; break; }
+            if (ops_status()->state == OPS_DONE && jq_n && !play_after_copy) { ops_reset(); jq_start_next(); break; }
+            if (ops_status()->state == OPS_DONE && shutdown_after && !play_after_copy) { ops_reset(); ui = UI_BROWSE; refresh_keep(); shut_countdown = 600; break; }
             if (ops_status()->state != OPS_RUNNING) {
                 if (play_after_copy && ops_status()->state == OPS_DONE) {
                     const char *bn = strrchr(launch_src, '/');
@@ -2750,6 +2929,7 @@ int main(void)
                 }
                 play_after_copy = 0;
                 ops_reset();
+                if (jq_n && jq_start_next()) { open_modal(UI_PROGRESS_OPS); break; }
                 if (ops_ret_tools) { ops_ret_tools = 0; ui = UI_TOOLS; tools_after_ops(); break; }
                 for (int i = 0; i < ent_count; i++) ents[i].marked = 0;
                 refresh_keep();
@@ -2888,6 +3068,24 @@ int main(void)
             case UI_SETTINGS: draw_settings(); break;
             case UI_SCANNING: draw_scanning(); break;
         }
+        if (ops_bg && ops_status()->state == OPS_RUNNING) {
+            const ops_status_t *os = ops_status();
+            int pc = os->op == OP_DELETE ? (os->files_total ? (int)(os->files_done * 100 / os->files_total) : 0) : (os->bytes_total ? (int)(os->bytes_done * 100 / os->bytes_total) : 0);
+            char m[160], q[48] = "";
+            if (jq_n) { snprintf(q, sizeof(q), "   \xC2\xB7   "); size_t l = strlen(q); snprintf(q + l, sizeof(q) - l, T(S_QUEUE_N), jq_n); }
+            snprintf(m, sizeof(m), "%s %d%%%s%s", os->op == OP_DELETE ? T(S_DELETING) : os->op == OP_MOVE ? T(S_MOVING) : T(S_COPYING), pc, q, shutdown_after ? "   \xE2\x8F\xBB" : "");
+            float mw = gfx_text_width(m, 11, 1) + 30, mx = SCR_W / 2 - mw / 2, my = 50;
+            gfx_rrect(mx, my, mw, 22, 11, RGBA8(30, 34, 80, 235));
+            gfx_rrect(mx, my, mw * pc / 100.0f, 22, 11, WITH_ALPHA(C_ACC1, 160));
+            gfx_text(SCR_W / 2, my + 5, m, 11, 1, C_TEXT, ALIGN_CENTER);
+        }
+        if (shut_countdown) {
+            float x2, y2; draw_modal_frame(420, 140, &x2, &y2);
+            char m[96]; snprintf(m, sizeof(m), T(S_SHUTDOWN_IN), (shut_countdown + 59) / 60);
+            gfx_text(SCR_W / 2, y2 + 40, m, 17, 1, C_TEXT, ALIGN_CENTER);
+            float hx = SCR_W / 2 - 40, bwi = gfx_button_icon(hx, y2 + 90, cancel_icon, 18);
+            gfx_text(hx + bwi + 6, y2 + 91, T(S_CANCEL), 12, 0, C_DIM, ALIGN_LEFT);
+        }
         draw_toast();
         gfx_end_frame();
     }
@@ -2899,12 +3097,14 @@ int main(void)
     /* exiting: background workers (FTP, covers, thumbnails) are told to stop but not waited for —
      * a network request or a connected FTP client could otherwise hold the exit for many seconds */
     ftp_stop_async();
+    hub_stop_async();
     covers_stop_async();
     loader_stop();          /* local files only: finishes quickly */
     games_stop();
     free_entries();
     vfs_shutdown();
     gfx_shutdown();
+    if (power_off) { lv2syscall4(379, 0x1100, 0, 0, 0); }
     if (pending_self[0]) launch_exec(pending_self, pending_arg[0] ? pending_arg : NULL);
     sysProcessExit(0);
     return 0;

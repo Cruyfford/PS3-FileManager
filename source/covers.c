@@ -282,6 +282,7 @@ static void video_query(const char *name, char *out, int n)
     }
 }
 
+void covers_video_query(const char *name, char *out, int n) { video_query(name, out, n); }
 
 static void norm_title(const char *in, char *out, int n)
 {
