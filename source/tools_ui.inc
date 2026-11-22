@@ -228,7 +228,7 @@ static int sv_action_open, sv_action_sel, sv_action_confirm;
 /* Five-action Save Data Manager. Crypto operations are intentionally gated
  * until the verified PFD cipher/signature implementation is available.
  * Presenting unimplemented operations as working would corrupt save data. */
-static int sv_detail_open, sv_detail_sel, sv_detail_confirm;
+static int sv_detail_open, sv_detail_sel, sv_detail_confirm, sv_detail_sfo_only;
 
 /* Explicit target account selection, instead of guessing the account with
  * the largest number of existing saves. */
@@ -335,6 +335,42 @@ static void sv_copy_workspace(void)
     else { sv_work_pending = 0; ops_ret_tools = 0; show_toast(T(S_SAVE_WORK_FAIL)); }
 }
 
+/* On-device metadata-only resign. The original live save is never modified. */
+static void sv_resign_sfo_only(void)
+{
+    if (!sv_n || sv_sel<0 || sv_sel>=sv_n) return;
+    if (!pfd_probe_sfo_only(sv[sv_sel].path)) {
+        show_toast("Only PARAM.SFO-only saves are supported for PFD resign");
+        return;
+    }
+    if (ops_status()->state==OPS_RUNNING || ops_bg) {
+        show_toast("Finish the active copy operation first");
+        return;
+    }
+    const char *root="/dev_hdd0/CRUYFFORD_SAVE_CRYPTO";
+    static char src[1][1024];
+    char dst[1024];
+    if (vfs_mkdir(root)!=0 && !vfs_exists(root)) {
+        show_toast("Could not create crypto workspace"); return;
+    }
+    snprintf(dst,sizeof(dst),"%s/resign_%llu",root,(unsigned long long)ops_now_ms());
+    if (vfs_exists(dst) || vfs_mkdir(dst)!=0) {
+        show_toast("Could not create unique crypto workspace"); return;
+    }
+    snprintf(src[0],sizeof(src[0]),"%s",sv[sv_sel].path);
+    snprintf(sv_work_path,sizeof(sv_work_path),"%s/%s",dst,sv[sv_sel].dir);
+    sv_work_pending=1;
+    sv_work_completed=0;
+    ops_ret_tools=1;
+    if (ops_start(OP_PFD_RESIGN_WORK,src,1,dst)) {
+        open_modal(UI_PROGRESS_OPS);
+    } else {
+        sv_work_pending=0;
+        ops_ret_tools=0;
+        show_toast("PFD resign could not start");
+    }
+}
+
 static int sv_usb[MAX_VOL], sv_nusb;
 static void sv_scan_usb(void) { sv_nusb = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) sv_usb[sv_nusb++] = tl_dests[k]; }
 
@@ -409,7 +445,9 @@ static void draw_tools_saves(void)
             "Requires PFD decrypt engine + secure file ID",
             "Make a safe editable copy (HEX editor)",
             "Requires encrypted-file engine + secure file ID",
-            "Requires valid PARAM.PFD hashes and user keys",
+            sv_detail_sfo_only ?
+                "Resign metadata-only PARAM.PFD on a separate copy" :
+                "Requires Secure File IDs for encrypted game files",
             sv_tab ? "Restore backup to chosen PS3 user" : "Copy selected save to USB"
         };
         gfx_rect(0,55,SCR_W,392,RGBA8(2,8,30,180));
@@ -425,12 +463,16 @@ static void draw_tools_saves(void)
                        i==sv_detail_sel ? C_TEXT : (i==1||i==4 ? C_TEXT:C_DIM),ALIGN_LEFT);
             L_text_fit(xx+31,ry+24,ww-65,subs[i],10,0,
                        i==sv_detail_sel?C_TEXT:C_DIM,ALIGN_LEFT);
-            if (i==0||i==2||i==3)
+            if (i==0||i==2||(i==3 && !sv_detail_sfo_only))
                 L_text_fit(xx+ww-87,ry+10,63,"LOCKED",10,1,
                            RGBA8(255,190,110,255),ALIGN_RIGHT);
+            else if (i==3)
+                L_text_fit(xx+ww-100,ry+10,76,"LIMITED",10,1,
+                           RGBA8(155,225,200,255),ALIGN_RIGHT);
         }
         if (sv_detail_confirm) {
             L_text_fit(xx+20,yy+320,ww-40,
+                sv_detail_sel==3 ? "Press X again to resign a WORKING COPY" :
                 "Press X again to restore into selected account",
                 10,1,RGBA8(255,190,95,255),ALIGN_CENTER);
         }
@@ -606,6 +648,14 @@ static void handle_tools_saves(void)
                 sv_detail_open=0;
                 sv_detail_confirm=0;
                 sv_run(1);
+            } else if (sv_detail_sel==3 && sv_detail_sfo_only) {
+                if (!sv_detail_confirm) {
+                    sv_detail_confirm=1;
+                    return;
+                }
+                sv_detail_open=0;
+                sv_detail_confirm=0;
+                sv_resign_sfo_only();
             } else {
                 pfd_probe_info_t info;
                 int result=pfd_probe_save(sv[sv_sel].path,&info);
@@ -661,6 +711,7 @@ static void handle_tools_saves(void)
         sv_detail_open=1;
         sv_detail_sel=1;
         sv_detail_confirm=0;
+        sv_detail_sfo_only=pfd_probe_sfo_only(sv[sv_sel].path);
     }
 }
 
