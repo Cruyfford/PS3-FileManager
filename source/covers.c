@@ -670,6 +670,10 @@ int covers_catalog_lookup(const char *title_id, char *out_path, int n)
     if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
     snprintf(path, sizeof(path), "%s/%s.png", cache_dir, title_id);
     if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
+    /* An installed PSN game often has genuine ICON0.PNG even when no online
+     * box cover exists for its NPUB/NPEB digital release ID. */
+    snprintf(path,sizeof(path),"/dev_hdd0/game/%s/ICON0.PNG",title_id);
+    if (vfs_exists(path)) { snprintf(out_path,n,"%s",path); return CV_CACHED; }
     /* A user-provided image takes priority over previous .none cache entries. */
     int st = cached(key, out_path, n);
     if (st != CV_NONE) return st;
