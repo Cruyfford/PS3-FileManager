@@ -4,6 +4,8 @@
 #include "pkgtool.h"
 #include "archive.h"
 #include "disc.h"
+#include "save_pfd.h"
+#include "pfd.h"
 #include <sys/thread.h>
 #include <sys/systime.h>
 #include <stdio.h>
@@ -427,6 +429,47 @@ static void worker(void *arg)
         free(buf); buf = NULL;
         st.error = err;
         st.state = cancel_flag ? OPS_CANCELLED : err ? OPS_ERROR : OPS_DONE;
+        sysThreadExit(0);
+        return;
+    }
+
+    if (q_op == OP_PFD_RESIGN_WORK) {
+        /* Only PFD files with a single PARAM.SFO entry are supported.
+         * Never overwrite a live save; resign a verified HDD working copy. */
+        char dst[1024]={0};
+        if (q_n!=1 || !pfd_probe_sfo_only(q_src[0]) ||
+            vfs_backend(q_dst)!=VFS_NATIVE || !vfs_exists(q_dst)) {
+            snprintf(st.error_path,sizeof(st.error_path),"%s",q_src[0]);
+            err=OPE_OPEN_SRC;
+        }
+        if (!err) {
+            join(dst,sizeof(dst),q_dst,base_name(q_src[0]));
+            if (vfs_exists(dst)) {
+                snprintf(st.error_path,sizeof(st.error_path),"%s",dst);
+                err=OPE_OPEN_DST;
+            }
+        }
+        if (!err) {
+            measure(q_src[0],0);
+            buf=(uint8_t *)malloc(BUF_SIZE);
+            if (!buf) err=OPE_MEM;
+        }
+        if (!err) err=copy_tree(q_src[0],dst,0);
+        if (!err && !cancel_flag) {
+            savesync_pfd_options_t opts;
+            savesync_pfd_default_options(&opts);
+            /* Portable profile keys, only safe for metadata-only PFD
+             * with no encrypted game data or secure-file ID entries. */
+            if (savesync_pfd_self_test()!=0 ||
+                savesync_pfd_resign(dst,&opts)!=0 ||
+                savesync_pfd_validate(dst)!=0) {
+                snprintf(st.error_path,sizeof(st.error_path),"%s/PARAM.PFD",dst);
+                err=OPE_WRITE;
+            }
+        }
+        free(buf);buf=NULL;
+        st.error=err;
+        st.state=cancel_flag?OPS_CANCELLED:err?OPS_ERROR:OPS_DONE;
         sysThreadExit(0);
         return;
     }
