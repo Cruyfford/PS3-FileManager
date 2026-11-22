@@ -47,34 +47,61 @@ static const uint32_t tl_cols[5][2] = {
     { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) },
     { RGBA8(26, 193, 212, 255), RGBA8(60, 105, 230, 255) } };
 
+/* Return to the same middle-row card when navigating up from the wide store tile. */
+static int tl_hub_last_middle = 2;
+
 static void draw_tools_hub(void)
 {
     tl_title(T(S_TOOLS), NULL);
-    /* 3 + 2 compact tiles, all comfortably inside the 848x512 viewport. */
-    const float cw = 244, ch = 126, gap = 16;
-    const float gx = (SCR_W - 3*cw - 2*gap) / 2, gy = 94;
+
+    /* PS3 UI is 848x512; hints begin at y=452.
+     * Put four regular tiles in a 2x2 grid, then a full-width ARCADIA tile.
+     * All five tiles finish by y=436 and stay clear of the hints/footer. */
+    const float margin = 26, col_gap = 20, row_gap = 14;
+    const float tile_w = (SCR_W - 2*margin - col_gap) / 2.0f;
+    const float tile_h = 112, top = 82;
+    const float wide_y = top + 2*(tile_h + row_gap);
+    const float wide_h = 102;
+    const float animate_y = (1.0f - tl_anim) * 10.0f;
+
     for (int i = 0; i < 5; i++) {
-        int row = i >= 3, col = row ? i-3 : i;
-        float x = gx + col*(cw+gap) + (row ? (cw+gap)*0.5f : 0);
-        float y = gy + row*(ch+18) + (1-tl_anim)*24;
-        int on = i == tl_sel;
-        uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
-        if (on) gfx_glow(MXP(x + cw/2), y + ch/2, cw*0.55f, WITH_ALPHA(ca, 80));
-        if (on) L_rrect_grad(x, y, cw, ch, 16, WITH_ALPHA(ca,235), WITH_ALPHA(cb,235));
-        else L_rrect(x, y, cw, ch, 16, C_PANEL);
-        L_border(x, y, cw, ch, 16, on ? 2 : 1, on ?
-                 RGBA8(255,255,255,185) : C_EDGE);
-        float ix = MXP(x+34), iy = y+45;
-        gfx_circle(ix,iy,21,on ? RGBA8(255,255,255,55) : WITH_ALPHA(ca,70));
-        gfx_circle(ix,iy,13,on ? RGBA8(255,255,255,80) : WITH_ALPHA(ca,110));
-        gfx_circle(ix,iy,4,on ? C_TEXT : ca);
-        L_text_fit(x+67, y+30, cw-78,
-                   i==4 ? "ARCADIA Store" : T(tl_items[i][0]),
-                   16, 1, C_TEXT, ALIGN_LEFT);
-        L_text_fit(x+67, y+65, cw-78,
-                   i==4 ? (g_lang ? "الألعاب والإضافات" : "Games & downloads") :
-                          T(tl_items[i][1]),
-                   10,0,on ? C_TEXT : C_DIM,ALIGN_LEFT);
+        const int wide = (i == 4);
+        const float x = wide ? margin : margin + (i % 2) * (tile_w + col_gap);
+        const float y = (wide ? wide_y : top + (i / 2) * (tile_h + row_gap)) + animate_y;
+        const float w = wide ? SCR_W - 2*margin : tile_w;
+        const float h = wide ? wide_h : tile_h;
+        const int on = (i == tl_sel);
+        const uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
+
+        if (on) gfx_glow(MXP(x + w/2), y + h/2, w * (wide ? 0.38f : 0.55f), WITH_ALPHA(ca, 75));
+        if (on) L_rrect_grad(x, y, w, h, 18, WITH_ALPHA(ca, 235), WITH_ALPHA(cb, 235));
+        else L_rrect(x, y, w, h, 18, C_PANEL);
+        L_border(x, y, w, h, 18, on ? 2 : 1, on ? RGBA8(255,255,255,190) : C_EDGE);
+
+        const float icon_x = MXP(x + 43), icon_y = y + h/2;
+        gfx_circle(icon_x, icon_y, wide ? 27 : 24,
+                   on ? RGBA8(255,255,255,55) : WITH_ALPHA(ca,75));
+        gfx_circle(icon_x, icon_y, wide ? 16 : 14,
+                   on ? RGBA8(255,255,255,80) : WITH_ALPHA(ca,110));
+        gfx_circle(icon_x, icon_y, 5, on ? C_TEXT : ca);
+
+        if (wide) {
+            L_text_fit(x+89, y+22, w-310, "ARCADIA Store", 23, 1, C_TEXT, ALIGN_LEFT);
+            L_text_fit(x+89, y+58, w-310,
+                       g_lang ? "كتالوج الألعاب والإضافات والثيمات والبرامج"
+                              : "Games, DLC, themes and homebrew catalog",
+                       12, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+            const float tag_x = x+w-201, tag_y = y+30;
+            L_rrect(tag_x, tag_y, 178, 42, 12, RGBA8(7,22,58,on ? 170 : 125));
+            L_border(tag_x, tag_y, 178, 42, 12, 1, WITH_ALPHA(ca,140));
+            L_text_fit(tag_x+12, tag_y+13, 154, "GAMES | DLC | TOOLS",
+                       11, 1, C_TEXT, ALIGN_CENTER);
+        } else {
+            L_text_fit(x+84, y+29, w-101, T(tl_items[i][0]),
+                       18, 1, C_TEXT, ALIGN_LEFT);
+            L_text_fit(x+84, y+64, w-101, T(tl_items[i][1]),
+                       11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+        }
     }
 }
 
@@ -769,20 +796,20 @@ static void handle_tools(void)
     case TS_HUB: {
         uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
         if (in_pressed & B_CANCEL) { ui = UI_BROWSE; return; }
-        /* Match the compact 3-column / 2-row arrangement. */
+        /* Navigate 2x2 regular tiles with the full-width store below them. */
         if (in_active & R) {
-            if (tl_sel == 0 || tl_sel == 1 || tl_sel == 3) tl_sel++;
-        }
-        if (in_active & L) {
-            if (tl_sel == 1 || tl_sel == 2 || tl_sel == 4) tl_sel--;
-        }
-        if (in_active & B_UP) {
-            if (tl_sel == 3) tl_sel = 1;
-            else if (tl_sel == 4) tl_sel = 2;
-        }
-        if (in_active & B_DOWN) {
-            if (tl_sel == 0 || tl_sel == 1) tl_sel = 3;
-            else if (tl_sel == 2) tl_sel = 4;
+            if (tl_sel == 0 || tl_sel == 2) tl_sel++;
+        } else if (in_active & L) {
+            if (tl_sel == 1 || tl_sel == 3) tl_sel--;
+        } else if (in_active & B_UP) {
+            if (tl_sel == 4) tl_sel = tl_hub_last_middle;
+            else if (tl_sel == 2 || tl_sel == 3) tl_sel -= 2;
+        } else if (in_active & B_DOWN) {
+            if (tl_sel == 0 || tl_sel == 1) tl_sel += 2;
+            else if (tl_sel == 2 || tl_sel == 3) {
+                tl_hub_last_middle = tl_sel;
+                tl_sel = 4;
+            }
         }
         if (in_pressed & B_OK) {
             tl_scan_dests();
