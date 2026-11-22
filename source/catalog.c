@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 #include <sys/thread.h>
 #include <curl/curl.h>
@@ -154,7 +155,7 @@ int catalog_is_direct_pkg(const catalog_item_t *item)
 
 static size_t on_write(void *ptr, size_t size, size_t nmemb, void *user)
 {
-    return fwrite(ptr, size, nmemb, (FILE *)user);
+    return fwrite(ptr, 1, size * nmemb, (FILE *)user);
 }
 
 static int on_progress(void *unused, double total, double now, double upload_total, double upload_now)
