@@ -38,6 +38,7 @@
 #include "tools.h"
 #include "catalog.h"
 #include "integrity.h"
+#include "save_pfd.h"
 #include "subdl.h"
 #include "hubapi.h"
 #define SUBKEY_FILE APP_DIR "/subdl_key.txt"
