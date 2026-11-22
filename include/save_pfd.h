@@ -7,3 +7,6 @@ typedef struct {
 } pfd_probe_info_t;
 /* Returns 1 for recognized format, 0 if absent, -1 for unreadable/unknown. */
 int pfd_probe_save(const char *savedir, pfd_probe_info_t *out);
+
+/* 1 when PARAM.PFD has exactly one protected entry: PARAM.SFO; 0 otherwise. */
+int pfd_probe_sfo_only(const char *savedir);
