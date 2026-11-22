@@ -224,6 +224,7 @@ static save_t *sv; static int sv_n, sv_sel, sv_top, sv_tab, sv_dest;
 static char sv_user[16] = "00000001";
 static char sv_accounts[32][16];
 static int sv_naccounts, sv_account_sel, sv_restore_confirm;
+static int sv_action_open, sv_action_sel, sv_action_confirm;
 
 /* Explicit target account selection, instead of guessing the account with
  * the largest number of existing saves. */
@@ -392,14 +393,47 @@ static void draw_tools_saves(void)
     char pfd[1100];
     snprintf(pfd, sizeof(pfd), "%s/PARAM.PFD", sv[sv_sel].path);
     if (vfs_exists(pfd)) L_text_fit(28, 433, SCR_W - 56, T(S_SAVE_WORK_PFD), 9, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
+
+    if (sv_action_open) {
+        /* Controller-native context menu; stays inside 848x512 and above hints. */
+        const float x0=146, y0=105, ww=556, hh=326;
+        const char *options[4] = {
+            sv_tab ? "Copy to PS3 (Restore)" : "Copy to USB (Backup)",
+            "Copy to Editing Workspace",
+            "Delete (Move to Trash)",
+            "Cancel"
+        };
+        gfx_rect(0,55,SCR_W,390,RGBA8(3,8,30,150));
+        L_rrect(x0,y0,ww,hh,20,RGBA8(20,32,68,252));
+        L_border(x0,y0,ww,hh,20,2,C_ACC1);
+        L_text_fit(x0+22,y0+15,ww-44,"Save Data Manager - Actions",19,1,C_TEXT,ALIGN_LEFT);
+        L_text_fit(x0+22,y0+48,ww-44,sv[sv_sel].title,12,0,C_DIM,ALIGN_LEFT);
+        for (int i=0;i<4;i++) {
+            float yy=y0+83+i*47;
+            if (sv_action_sel==i)
+                L_rrect_grad(x0+20,yy,ww-40,42,11,C_ACC1,C_ACC2);
+            else L_rrect(x0+20,yy,ww-40,42,11,RGBA8(255,255,255,14));
+            L_text_fit(x0+36,yy+12,ww-74,options[i],14,
+                       sv_action_sel==i,C_TEXT,ALIGN_LEFT);
+        }
+        if (sv_action_confirm) {
+            L_text_fit(x0+22,y0+281,ww-44,
+                sv_action_sel==2 ?
+                "Press X again to move this save to the Trash folder." :
+                "Press X again to restore to the selected PS3 account.",
+                10,1,RGBA8(255,195,95,255),ALIGN_CENTER);
+        }
+    }
 }
 
-static void sv_run(void)
+static void sv_run(int only_selected)
 {
     static char srcs[OPS_MAX_SRC][1024];
     int n = 0, any = 0;
     for (int i = 0; i < sv_n; i++) if (sv[i].marked) any = 1;
-    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++) if (any ? sv[i].marked : i == sv_sel) snprintf(srcs[n++], 1024, "%s", sv[i].path);
+    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++)
+        if (only_selected ? i == sv_sel : (any ? sv[i].marked : i == sv_sel))
+            snprintf(srcs[n++], 1024, "%s", sv[i].path);
     if (!n) return;
     char dst[600];
     if (sv_tab == 0) {
@@ -428,8 +462,75 @@ static void sv_run(void)
     else { ops_ret_tools = 0; show_toast("Could not start save transfer"); }
 }
 
+/* Safe delete: remove only the selected save from the live save list.
+ * It remains recoverable in a trash directory on the SAME volume. */
+static void sv_trash_selected(void)
+{
+    if (!sv_n || sv_sel<0 || sv_sel>=sv_n) return;
+    if (ops_status()->state==OPS_RUNNING || ops_bg) {
+        show_toast("Please complete the running file operation first");
+        return;
+    }
+    char dest[1024],root[1024];
+    if (sv_tab==0) {
+        /* Keep a separate trash folder per PS3 user. */
+        if (strlen(sv[sv_sel].user)!=8) { show_toast("Invalid PS3 user"); return; }
+        snprintf(root,sizeof(root),"/dev_hdd0/CRUYFFORD_SAVE_TRASH");
+        if (vfs_mkdir(root)!=0 && !vfs_exists(root)) {
+            show_toast("Cannot create save Trash folder"); return;
+        }
+        snprintf(dest,sizeof(dest),"%s/%s",root,sv[sv_sel].user);
+    } else {
+        const char *marker=strstr(sv[sv_sel].path,"/PS3/SAVEDATA/");
+        if (!marker || marker==sv[sv_sel].path) {
+            show_toast("Unsupported USB save location"); return;
+        }
+        int prefix=(int)(marker-sv[sv_sel].path);
+        if (prefix<2 || prefix>(int)sizeof(root)-32) {
+            show_toast("Invalid USB drive location"); return;
+        }
+        snprintf(root,sizeof(root),"%.*s",prefix,sv[sv_sel].path);
+        snprintf(dest,sizeof(dest),"%s/CRUYFFORD_SAVE_TRASH",root);
+    }
+    if (vfs_mkdir(dest)!=0 && !vfs_exists(dest)) {
+        show_toast("Cannot create save Trash folder"); return;
+    }
+    static char picked[1][1024];
+    snprintf(picked[0],sizeof(picked[0]),"%s",sv[sv_sel].path);
+    ops_ret_tools=1;
+    if (ops_start(OP_SAVE_TRASH,picked,1,dest)) open_modal(UI_PROGRESS_OPS);
+    else { ops_ret_tools=0; show_toast("Could not move save to Trash"); }
+}
+
+static void sv_handle_actions(void)
+{
+    if (in_pressed&(B_CANCEL|B_TRI)) {
+        sv_action_open=0; sv_action_confirm=0; return;
+    }
+    if (in_active&B_UP) {
+        sv_action_sel=(sv_action_sel+3)%4; sv_action_confirm=0;
+    } else if (in_active&B_DOWN) {
+        sv_action_sel=(sv_action_sel+1)%4; sv_action_confirm=0;
+    }
+    if (!(in_pressed&B_OK)) return;
+    if (sv_action_sel==3) {
+        sv_action_open=0; sv_action_confirm=0; return;
+    }
+    if ((sv_action_sel==2 || (sv_action_sel==0 && sv_tab==1)) &&
+        !sv_action_confirm) {
+        sv_action_confirm=1; return;
+    }
+    int action=sv_action_sel;
+    sv_action_open=0;
+    sv_action_confirm=0;
+    if (action==0) sv_run(1);
+    else if (action==1) sv_copy_workspace();
+    else if (action==2) sv_trash_selected();
+}
+
 static void handle_tools_saves(void)
 {
+    if (sv_action_open) { sv_handle_actions(); return; }
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
     if (in_pressed & (B_L1 | B_R1)) {
@@ -452,7 +553,11 @@ static void handle_tools_saves(void)
     if (in_active & B_DOWN) { sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0; sv_restore_confirm=0; }
     if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; sv_restore_confirm=0; }
     if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; sv_restore_confirm=0; }
-    if (in_pressed & B_TRI) { sv_restore_confirm=0; sv_copy_workspace(); return; }
+    if (in_pressed & B_TRI) {
+        sv_restore_confirm=0;
+        sv_action_open=1; sv_action_sel=0; sv_action_confirm=0;
+        return;
+    }
     if (in_pressed & B_SQU) { sv_restore_confirm=0; sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
     if (in_pressed & B_SELECT) { sv_restore_confirm=0; int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
     if (in_pressed & B_OK) {
@@ -465,7 +570,7 @@ static void handle_tools_saves(void)
             return;
         }
         sv_restore_confirm=0;
-        sv_run();
+        sv_run(0);
     }
 }
 
@@ -860,7 +965,17 @@ static void draw_tools_hints(void)
     switch (tl_scr) {
         case TS_HUB: h[n++] = (hint_t){ ok_icon, S_ENTER }; break;
         case TS_DISC: if (dc_state == 1) h[n++] = (hint_t){ ok_icon, S_CHANGE }; h[n++] = (hint_t){ BTN_SELECT, S_REFRESH }; break;
-        case TS_SAVES: h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP }; h[n++] = (hint_t){ BTN_SQUARE, S_MARK }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
+        case TS_SAVES:
+            if (sv_action_open) {
+                h[n++] = (hint_t){ ok_icon, S_ENTER };
+                h[n++] = (hint_t){ cancel_icon, S_BACK };
+            } else {
+                h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP };
+                h[n++] = (hint_t){ BTN_TRIANGLE, S_MENU };
+                h[n++] = (hint_t){ BTN_SQUARE, S_MARK };
+                h[n++] = (hint_t){ BTN_L1, S_SWITCH };
+            }
+            break;
         case TS_SPACE: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_TRIANGLE, S_GO_TO }; break;
         case TS_SEARCH: h[n++] = (hint_t){ ok_icon, S_GO_TO }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; break;
         case TS_CATALOG: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
@@ -893,7 +1008,11 @@ static void handle_tools(void)
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
-            else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_restore_confirm=0; sv_read_accounts(); sv_scan_usb(); sv_scan(); }
+            else if (tl_sel == 1) {
+                tl_scr = TS_SAVES;
+                sv_action_open=sv_action_confirm=sv_restore_confirm=0;
+                sv_read_accounts(); sv_scan_usb(); sv_scan();
+            }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
             else if (tl_sel == 3) { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
             else arc_open();
