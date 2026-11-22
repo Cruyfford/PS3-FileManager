@@ -155,7 +155,12 @@ int catalog_is_direct_pkg(const catalog_item_t *item)
 
 static size_t on_write(void *ptr, size_t size, size_t nmemb, void *user)
 {
-    return fwrite(ptr, 1, size * nmemb, (FILE *)user);
+    /* Native PS3 paths must go through the unified VFS (sysFs).
+     * stdio fopen() may not map /dev_hdd0 in all PSL1GHT runtimes. */
+    if (!size || !nmemb || nmemb > UINT32_MAX / size) return 0;
+    uint32_t bytes = (uint32_t)(size * nmemb);
+    int64_t written = vfs_write((vfs_file_t *)user, ptr, bytes);
+    return written < 0 ? 0 : (size_t)written;
 }
 
 static int on_progress(void *unused, double total, double now, double upload_total, double upload_now)
@@ -184,7 +189,7 @@ static void download_worker(void *arg)
         sysThreadExit(0);
         return;
     }
-    FILE *f = fopen(tmp,"wb");
+    vfs_file_t *f = vfs_open_write(tmp);
     if (!f) {
         snprintf(dl_message,sizeof(dl_message),"Cannot write to internal HDD");
         dl_state = CAT_DL_FAILED;
@@ -194,7 +199,9 @@ static void download_worker(void *arg)
     CURL *c = curl_easy_init();
     CURLcode code = CURLE_FAILED_INIT;
     long http = 0;
+    char curl_error[CURL_ERROR_SIZE] = {0};
     if (c) {
+        curl_easy_setopt(c, CURLOPT_ERRORBUFFER, curl_error);
         curl_easy_setopt(c, CURLOPT_URL, dl_url);
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_write);
         curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
@@ -215,7 +222,7 @@ static void download_worker(void *arg)
         curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
         curl_easy_cleanup(c);
     }
-    fclose(f);
+    vfs_close(f);
     if (dl_cancel) {
         vfs_unlink(tmp);
         dl_state = CAT_DL_CANCELLED;
@@ -226,14 +233,17 @@ static void download_worker(void *arg)
     if (code != CURLE_OK || (http != 200 && http != 206)) {
         vfs_unlink(tmp);
         dl_state = CAT_DL_FAILED;
-        snprintf(dl_message,sizeof(dl_message),"Download failed (curl %d / HTTP %ld)", (int)code, http);
+        snprintf(dl_message,sizeof(dl_message),"Failed: HTTP %ld, curl %d (%s)", http, (int)code,
+                 curl_error[0] ? curl_error : curl_easy_strerror(code));
         sysThreadExit(0);
         return;
     }
-    f = fopen(tmp,"rb");
+    f = vfs_open_read(tmp);
     unsigned char magic[4] = {0};
-    int valid = f && fread(magic,1,4,f) == 4 && magic[0] == 0x7f && magic[1] == 'P' && magic[2] == 'K' && magic[3] == 'G';
-    if (f) fclose(f);
+    int valid = f && vfs_read(f,magic,4) == 4 &&
+                magic[0] == 0x7f && magic[1] == 'P' &&
+                magic[2] == 'K' && magic[3] == 'G';
+    if (f) vfs_close(f);
     if (!valid || vfs_rename(tmp,full) != 0) {
         vfs_unlink(tmp);
         dl_state = CAT_DL_FAILED;

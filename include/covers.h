@@ -19,3 +19,6 @@ int  covers_generation(void);
 void covers_stop_async(void);
 /* cleaned search title from a video file name ("The.Matrix.1999.1080p.mkv" -> "The Matrix 1999") */
 void covers_video_query(const char *name, char *out, int n);
+
+/* Catalog covers from title IDs, cached locally or fetched asynchronously. */
+int covers_catalog_lookup(const char *title_id, char *out_path, int n);
