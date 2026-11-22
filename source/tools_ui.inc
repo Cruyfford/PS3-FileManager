@@ -243,6 +243,27 @@ static void sv_scan(void)
     qsort(sv, sv_n, sizeof(save_t), sv_cmp);
 }
 
+/* Save editing workspace: copies selected save away from the live user profile.
+ * This does NOT decrypt encrypted PFD files or resign hashes. */
+static int sv_work_pending;
+static char sv_work_path[1024];
+static void sv_copy_workspace(void)
+{
+    if (sv_n <= 0 || sv_sel < 0 || sv_sel >= sv_n) return;
+    static char src[1][1024];
+    char root[1024], dst[1024];
+    snprintf(root, sizeof(root), "/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE");
+    if (vfs_mkdir(root) != 0 && !vfs_exists(root)) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
+    snprintf(dst, sizeof(dst), "%s/edit_%llu", root, (unsigned long long)ops_now_ms());
+    if (vfs_mkdir(dst) != 0) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
+    snprintf(src[0], sizeof(src[0]), "%s", sv[sv_sel].path);
+    snprintf(sv_work_path, sizeof(sv_work_path), "%s/%s", dst, sv[sv_sel].dir);
+    sv_work_pending = 1;
+    ops_ret_tools = 1;
+    if (ops_start(OP_COPY, src, 1, dst)) open_modal(UI_PROGRESS_OPS);
+    else { sv_work_pending = 0; ops_ret_tools = 0; show_toast(T(S_SAVE_WORK_FAIL)); }
+}
+
 static int sv_usb[MAX_VOL], sv_nusb;
 static void sv_scan_usb(void) { sv_nusb = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) sv_usb[sv_nusb++] = tl_dests[k]; }
 
@@ -294,6 +315,10 @@ static void draw_tools_saves(void)
     L_text_fit(px + pw / 2, y + 150, pw - 20, sv[sv_sel].title, 12, 1, C_TEXT, ALIGN_CENTER);
     char cnt[64]; snprintf(cnt, sizeof(cnt), "%d / %d", sv_sel + 1, sv_n);
     L_text(px + pw / 2, y + 260, cnt, 11, 0, C_DIM, ALIGN_CENTER);
+    L_text_fit(28, 425, SCR_W - 56, T(S_SAVE_WORK_COPY), 12, 1, C_TEXT, ALIGN_LEFT);
+    char pfd[1100];
+    snprintf(pfd, sizeof(pfd), "%s/PARAM.PFD", sv[sv_sel].path);
+    if (vfs_exists(pfd)) L_text_fit(28, 450, SCR_W - 56, T(S_SAVE_WORK_PFD), 11, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
 }
 
 static void sv_run(void)
@@ -325,6 +350,7 @@ static void handle_tools_saves(void)
     if (in_active & B_DOWN) sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0;
     if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; }
     if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; }
+    if (in_pressed & B_TRI) { sv_copy_workspace(); return; }
     if (in_pressed & B_SQU) { sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
     if (in_pressed & B_SELECT) { int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
     if (in_pressed & B_OK) sv_run();
@@ -516,6 +542,12 @@ static void handle_tools(void)
 /* called when a tool's copy finishes */
 static void tools_after_ops(void)
 {
+    if (sv_work_pending) {
+        sv_work_pending = 0;
+        if (vfs_exists(sv_work_path)) { open_dir(sv_work_path, NULL); tl_scr = TS_HUB; ui = UI_BROWSE; }
+        else show_toast(T(S_SAVE_WORK_FAIL));
+        return;
+    }
     if (tl_scr == TS_SAVES) sv_scan();
 }
 
