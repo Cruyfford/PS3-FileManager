@@ -1,0 +1,68 @@
+name: Build PKG
+
+on: [ push, pull_request, workflow_dispatch ]
+
+permissions:
+  contents: write
+
+jobs:
+  build_pkg:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Checkout ya2d
+      uses: actions/checkout@v4
+      with:
+        repository: bucanero/ya2d_ps3
+        path: ya2d_ps3
+
+    - name: Set env vars
+      run: |
+        echo "sha_name=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_ENV
+        echo "PS3DEV=${GITHUB_WORKSPACE}/ps3dev" >> $GITHUB_ENV
+        echo "PSL1GHT=${GITHUB_WORKSPACE}/ps3dev" >> $GITHUB_ENV
+        sudo apt-get update
+        sudo apt-get install -y python2.7
+
+    # pre-compiled PSL1GHT SDK (same one PKGi PS3 uses in CI)
+    - name: Download PSL1GHT toolchain
+      run: |
+        curl -sL https://github.com/bucanero/ps3toolchain/releases/download/ubuntu-latest-fad3b5fb/ps3dev-ubuntu-latest-2020-08-31.tar.gz | tar xz -C ./
+
+    - name: Install ya2d
+      working-directory: ya2d_ps3/libya2d
+      run: make install
+
+    - name: Build PKG
+      run: make pkg
+
+    - name: Build Nova Browser PKG
+      working-directory: browser
+      run: make pkg
+
+    - name: Upload PKG
+      uses: actions/upload-artifact@v4
+      with:
+        name: FileManager-${{ env.sha_name }}
+        path: |
+          FileManager.pkg
+          FileManager.gnpdrm.pkg
+          browser/NovaBrowser.pkg
+          browser/NovaBrowser.gnpdrm.pkg
+        if-no-files-found: error
+
+    - name: Publish release
+      if: github.event_name != 'pull_request'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: latest
+        name: File Manager (latest build)
+        body: "Build ${{ env.sha_name }} — File Manager: FileManager.pkg · Nova Browser: NovaBrowser.pkg (use the .gnpdrm.pkg version if the first one is refused)."
+        make_latest: true
+        files: |
+          FileManager.pkg
+          FileManager.gnpdrm.pkg
+          browser/NovaBrowser.pkg
+          browser/NovaBrowser.gnpdrm.pkg
