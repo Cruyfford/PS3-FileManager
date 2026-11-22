@@ -25,6 +25,9 @@ int webman_is_game(const char *name, int is_dir, const char *full)
     }
     const char *e = ext(name);
     if (!strcasecmp(e, "iso")) return 1;
+    size_t nl = strlen(name);
+    if (nl > 6 && !strcasecmp(name + nl - 6, ".iso.0")) return 1;          /* split ISO (FAT32) */
+    if (!strcasecmp(e, "cso") && strstr(full, "PSPISO")) return 1;
     if (strstr(full, "PSXISO") && (!strcasecmp(e, "bin") || !strcasecmp(e, "img"))) return 1;
     if (strstr(full, "PS2ISO") && (!strcasecmp(e, "bin") || !strcasecmp(e, "img"))) return 1;
     return 0;

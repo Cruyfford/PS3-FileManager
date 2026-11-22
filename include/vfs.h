@@ -52,3 +52,4 @@ int64_t vfs_read(vfs_file_t *f, void *buf, uint32_t len);
 int64_t vfs_write(vfs_file_t *f, const void *buf, uint32_t len);
 int  vfs_seek(vfs_file_t *f, uint64_t off);
 void vfs_close(vfs_file_t *f);
+int vfs_4gb_limit(const char *path);   /* FAT32: files must stay under 4 GB */

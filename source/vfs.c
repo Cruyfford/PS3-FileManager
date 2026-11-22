@@ -41,6 +41,18 @@ int vfs_backend(const char *p)
     return VFS_NTFS;
 }
 
+/* 1 when files on this path's drive can't be 4 GB or larger (FAT32) */
+int vfs_4gb_limit(const char *p)
+{
+    if (!p) return 0;
+    if (!strncmp(p, "/dev_usb", 8)) return 1;                     /* the PS3 only mounts FAT32 USB drives natively */
+    if (vfs_backend(p) == VFS_FAT) {
+        int slot = p[0] - '0';
+        if (slot >= 0 && slot < FF_SLOTS && ff_fs[slot]) return ff_fs[slot]->fs_type != FS_EXFAT;
+    }
+    return 0;
+}
+
 static int native_is_dir(const char *p) { struct stat sb; return stat(p, &sb) == 0 && S_ISDIR(sb.st_mode); }
 
 void vfs_init(void)

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define BUF_SIZE (3 * 1024 * 1024)
 #define MAX_LIST 2048
@@ -74,27 +75,139 @@ static void measure(const char *path, int depth)
     free(ents);
 }
 
-static int copy_file(const char *src, const char *dst)
+/* ---- large files and FAT32 ----
+ * Copying a file of 4 GB or more to a FAT32 drive splits it the way webMAN/multiMAN read it:
+ *   game.iso  -> game.iso.0, game.iso.1, ...        other files -> name.66600, name.66601, ...
+ * Copying such parts to a drive without the limit (HDD, NTFS, exFAT) joins them back into one file. */
+#define PART_SIZE 0xFFFF0000ULL   /* just under 4 GB, a multiple of 64 KB (and of 2048-byte sectors) */
+
+static int ends_with_ci(const char *s, const char *e) { size_t a = strlen(s), b = strlen(e); return a >= b && !strcasecmp(s + a - b, e); }
+
+/* part index of "x.iso.N" or "x.666NN", else -1; base receives the name without the suffix */
+static int part_index(const char *path, char *base, int n)
 {
-    snprintf(st.current, sizeof(st.current), "%s", base_name(src));
+    const char *dot = strrchr(path, '.');
+    if (!dot || !dot[1]) return -1;
+    const char *num = dot + 1;
+    for (const char *p = num; *p; p++) if (*p < '0' || *p > '9') return -1;
+    int len = (int)(dot - path);
+    if (strlen(num) == 5 && !strncmp(num, "666", 3)) {
+        if (base) { snprintf(base, n, "%.*s", len, path); }
+        return atoi(num + 3);
+    }
+    if (strlen(num) <= 2 && len >= 4 && !strncasecmp(dot - 4, ".iso", 4)) {
+        if (base) { snprintf(base, n, "%.*s", len, path); }
+        return atoi(num);
+    }
+    return -1;
+}
+
+static void part_name(const char *base, int i, int iso, char *out, int n)
+{
+    if (iso) snprintf(out, n, "%s.%d", base, i);
+    else snprintf(out, n, "%s.666%02d", base, i);
+}
+
+static int pump(vfs_file_t *in, vfs_file_t *out, uint64_t limit, uint64_t *moved)
+{
+    *moved = 0;
+    while (!cancel_flag && *moved < limit) {
+        uint64_t want = limit - *moved;
+        if (want > BUF_SIZE) want = BUF_SIZE;
+        int64_t r = vfs_read(in, buf, (uint32_t)want);
+        if (r < 0) return OPE_READ;
+        if (r == 0) break;
+        if (vfs_write(out, buf, (uint32_t)r) != r) return OPE_WRITE;
+        *moved += (uint64_t)r;
+        tick((uint64_t)r);
+    }
+    return OPE_NONE;
+}
+
+static int copy_plain(const char *src, const char *dst)
+{
     vfs_file_t *in = vfs_open_read(src);
     if (!in) { snprintf(st.error_path, sizeof(st.error_path), "%s", src); return OPE_OPEN_SRC; }
     vfs_file_t *out = vfs_open_write(dst);
     if (!out) { vfs_close(in); snprintf(st.error_path, sizeof(st.error_path), "%s", dst); return OPE_OPEN_DST; }
-    int err = OPE_NONE;
-    for (;;) {
-        if (cancel_flag) break;
-        int64_t r = vfs_read(in, buf, BUF_SIZE);
-        if (r < 0) { err = OPE_READ; break; }
-        if (r == 0) break;
-        int64_t w = vfs_write(out, buf, (uint32_t)r);
-        if (w != r) { err = OPE_WRITE; break; }
-        tick((uint64_t)r);
-    }
+    uint64_t moved;
+    int err = pump(in, out, ~0ULL, &moved);
     vfs_close(in);
     vfs_close(out);
     if (err || cancel_flag) vfs_unlink(dst);
     if (err) snprintf(st.error_path, sizeof(st.error_path), "%s", src);
+    return err;
+}
+
+static int copy_split(const char *src, const char *dst)
+{
+    vfs_file_t *in = vfs_open_read(src);
+    if (!in) { snprintf(st.error_path, sizeof(st.error_path), "%s", src); return OPE_OPEN_SRC; }
+    int iso = ends_with_ci(dst, ".iso");
+    int err = OPE_NONE;
+    char pn[1100];
+    for (int i = 0; i < 100 && !cancel_flag; i++) {
+        part_name(dst, i, iso, pn, sizeof(pn));
+        vfs_file_t *out = vfs_open_write(pn);
+        if (!out) { err = OPE_OPEN_DST; snprintf(st.error_path, sizeof(st.error_path), "%s", pn); break; }
+        uint64_t moved;
+        err = pump(in, out, PART_SIZE, &moved);
+        vfs_close(out);
+        if (err) { snprintf(st.error_path, sizeof(st.error_path), "%s", pn); break; }
+        if (moved == 0) { vfs_unlink(pn); break; }     /* exact multiple: no empty last part */
+        if (moved < PART_SIZE) break;
+    }
+    vfs_close(in);
+    if (err || cancel_flag) for (int i = 0; i < 100; i++) { part_name(dst, i, iso, pn, sizeof(pn)); if (!vfs_exists(pn)) break; vfs_unlink(pn); }
+    return err;
+}
+
+static int copy_join(const char *base_src, const char *dst, int iso)
+{
+    vfs_file_t *out = vfs_open_write(dst);
+    if (!out) { snprintf(st.error_path, sizeof(st.error_path), "%s", dst); return OPE_OPEN_DST; }
+    int err = OPE_NONE;
+    char pn[1100];
+    for (int i = 0; i < 100 && !cancel_flag; i++) {
+        part_name(base_src, i, iso, pn, sizeof(pn));
+        if (!vfs_exists(pn)) break;
+        vfs_file_t *in = vfs_open_read(pn);
+        if (!in) { err = OPE_OPEN_SRC; snprintf(st.error_path, sizeof(st.error_path), "%s", pn); break; }
+        uint64_t moved;
+        err = pump(in, out, ~0ULL, &moved);
+        vfs_close(in);
+        if (err) { snprintf(st.error_path, sizeof(st.error_path), "%s", pn); break; }
+    }
+    vfs_close(out);
+    if (err || cancel_flag) vfs_unlink(dst);
+    return err;
+}
+
+static int copy_file(const char *src, const char *dst)
+{
+    snprintf(st.current, sizeof(st.current), "%s", base_name(src));
+    int err;
+    char sbase[1024], dbase[1024];
+    int pi = part_index(src, sbase, sizeof(sbase));
+    int dst_limited = vfs_4gb_limit(dst);
+    if (pi >= 0 && !dst_limited) {
+        /* parts of a split file going to a drive that can hold the whole thing */
+        int iso = ends_with_ci(sbase, ".iso");
+        char first[1100];
+        part_name(sbase, 0, iso, first, sizeof(first));
+        if (pi > 0 && vfs_exists(first)) { st.files_done++; return OPE_NONE; }   /* joined with part 0 */
+        if (pi == 0) {
+            part_index(dst, dbase, sizeof(dbase));
+            snprintf(st.current, sizeof(st.current), "%s", base_name(dbase));
+            err = copy_join(sbase, dbase, iso);
+            st.files_done++;
+            return err;
+        }
+    }
+    uint64_t sz = 0; int d = 0;
+    vfs_stat(src, &d, &sz);
+    if (dst_limited && sz >= 0xFFFFFFFFULL) err = copy_split(src, dst);
+    else err = copy_plain(src, dst);
     st.files_done++;
     return err;
 }

@@ -228,6 +228,14 @@ static const char *en[S_COUNT] = {
     [S_CHANGE] = "Change",
     [S_SELECT_L] = "Select",
     [S_UP_DIR] = "Up",
+    [S_MYGAMES] = "My Games",
+    [S_ALL] = "All",
+    [S_SCANNING_GAMES] = "Looking for games…",
+    [S_NO_GAMES] = "No games found in PS3ISO, GAMES, PS2ISO, PSXISO or PSPISO",
+    [S_GAMES_COUNT] = "%d games",
+    [S_CATEGORY] = "Category",
+    [S_OPEN_FOLDER] = "Open folder",
+    [S_RESCAN] = "Rescan",
 };
 
 static const char *ar[S_COUNT] = {
@@ -456,6 +464,14 @@ static const char *ar[S_COUNT] = {
     [S_CHANGE] = "تغيير",
     [S_SELECT_L] = "اختيار",
     [S_UP_DIR] = "للأعلى",
+    [S_MYGAMES] = "ألعابي",
+    [S_ALL] = "الكل",
+    [S_SCANNING_GAMES] = "جارٍ البحث عن الألعاب…",
+    [S_NO_GAMES] = "لا توجد ألعاب في مجلدات PS3ISO و GAMES و PS2ISO و PSXISO و PSPISO",
+    [S_GAMES_COUNT] = "%d لعبة",
+    [S_CATEGORY] = "التصنيف",
+    [S_OPEN_FOLDER] = "فتح المجلد",
+    [S_RESCAN] = "إعادة البحث",
 };
 
 const char *T(int id)

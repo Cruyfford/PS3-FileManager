@@ -25,6 +25,7 @@
 #include "pkgtool.h"
 #include "audio.h"
 #include "video.h"
+#include "games.h"
 #include "ftp.h"
 #include "archive.h"
 #include "arabic.h"
@@ -333,6 +334,10 @@ static void select_volume(int i)
     open_dir(vols[vol_sel].root, NULL);
 }
 
+static int games_btn;        /* sidebar focus is on the My Games button */
+static int games_mode;       /* the games screen is the base view */
+static void games_open(void);
+
 static int marked_count(void)
 {
     int n = 0;
@@ -482,7 +487,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO, UI_GAMES };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -616,7 +621,7 @@ static void draw_sidebar(void)
     L_border(x, y, w, h, 16, 1, C_EDGE);
     L_text(x + 18, y + 14, T(S_DEVICES), 11, 1, C_DIM, ALIGN_LEFT);
 
-    int visible = (int)((h - 44) / ih);
+    int visible = (int)((h - 44 - 48) / ih);
     if (vol_sel < vol_scroll) vol_scroll = vol_sel;
     if (vol_sel >= vol_scroll + visible) vol_scroll = vol_sel - visible + 1;
 
@@ -635,6 +640,25 @@ static void draw_sidebar(void)
                       !strcmp(fs, "FAT32") ? RGBA8(60, 210, 150, 255) : !strcmp(fs, "ext") ? RGBA8(230, 90, 160, 255) : RGBA8(120, 125, 160, 255);
         L_rrect(x + w - 16 - cw, iy + 10, cw, 16, 8, WITH_ALPHA(cc, on ? 255 : 170));
         L_text(x + w - 16 - cw / 2, iy + 12, fs, 9, 1, C_TEXT, ALIGN_CENTER);
+    }
+    /* "My Games" button */
+    {
+        float by = y + h - 50, bh = 40;
+        int on = games_btn && !focus_list;
+        if (on) {
+            L_grad_pill(x + 8, by, w - 16, bh, 12, RGBA8(255, 120, 80, 235), RGBA8(200, 60, 160, 235));
+            L_border(x + 8, by, w - 16, bh, 12, 1.4f, RGBA8(255, 255, 255, 150 + (int)(sinf(gfx_frame() * 0.1f) * 60)));
+        } else {
+            L_rrect(x + 8, by, w - 16, bh, 12, RGBA8(255, 255, 255, 14));
+            L_border(x + 8, by, w - 16, bh, 12, 1, RGBA8(255, 140, 100, 90));
+        }
+        /* small controller glyph */
+        float gx = MX(x + 20, 22), gy = by + 13;
+        gfx_rrect(gx, gy, 22, 13, 6, on ? C_TEXT : RGBA8(255, 170, 130, 255));
+        gfx_rect(gx + 4, gy + 5, 6, 2, on ? RGBA8(200, 60, 120, 255) : RGBA8(20, 18, 50, 255));
+        gfx_rect(gx + 6, gy + 3, 2, 6, on ? RGBA8(200, 60, 120, 255) : RGBA8(20, 18, 50, 255));
+        gfx_circle(gx + 16, gy + 6, 2, on ? RGBA8(200, 60, 120, 255) : RGBA8(20, 18, 50, 255));
+        L_text_fit(x + 50, by + 11, w - 70, T(S_MYGAMES), 14, 1, on ? C_TEXT : RGBA8(255, 190, 160, 255), ALIGN_LEFT);
     }
 }
 
@@ -1390,6 +1414,159 @@ static void handle_audio(void)
     if (in_pressed & (L | B_L1)) audio_step(-1);
     if (in_pressed & B_CANCEL) { audio_stop(); ui = UI_BROWSE; }
     else if (audio_state() == AUD_ENDED) audio_step(1);
+}
+
+/* ---------- My Games ---------- */
+static int gm_cat = -1;          /* -1 all, else GP_* */
+static int gm_sel, gm_top;
+static float gm_anim;
+static int gm_idx[3000], gm_n;
+#define GM_COLS 6
+#define GM_ROWS 2
+
+static void games_open(void)
+{
+    if (!games_count() && !games_scanning()) games_scan(vols, vol_count);
+    games_mode = 1;
+    ui = UI_GAMES;
+    gm_anim = 0;
+}
+
+static void gm_filter(void)
+{
+    gm_n = 0;
+    int n = games_count();
+    for (int i = 0; i < n && gm_n < 3000; i++) { game_t *g = games_get(i); if (g && (gm_cat < 0 || g->plat == gm_cat)) gm_idx[gm_n++] = i; }
+    if (gm_sel >= gm_n) gm_sel = gm_n ? gm_n - 1 : 0;
+}
+
+static const char *plat_name(int p) { static const char *n[GP_COUNT] = { "PS3", "PS2", "PS1", "PSP" }; return p >= 0 && p < GP_COUNT ? n[p] : ""; }
+static uint32_t plat_color(int p)
+{
+    switch (p) {
+    case GP_PS3: return RGBA8(64, 115, 242, 255);
+    case GP_PS2: return RGBA8(82, 77, 205, 255);
+    case GP_PS1: return RGBA8(140, 143, 160, 255);
+    default: return RGBA8(205, 85, 128, 255);
+    }
+}
+
+static void draw_games(void)
+{
+    gm_filter();
+    gm_anim += (1.0f - gm_anim) * 0.2f;
+    float a = gm_anim;
+    /* title + count */
+    L_text(28, 22, T(S_MYGAMES), 24, 1, C_TEXT, ALIGN_LEFT);
+    char cnt[64];
+    if (games_scanning()) snprintf(cnt, sizeof(cnt), "%s", T(S_SCANNING_GAMES)); else snprintf(cnt, sizeof(cnt), T(S_GAMES_COUNT), gm_n);
+    L_text(SCR_W - 28, 30, cnt, 12, 0, C_DIM, ALIGN_RIGHT);
+    if (games_scanning()) { float tt = gfx_frame() / 60.0f; for (int i = 0; i < 6; i++) { float an = tt * 5 + i * 1.05f; gfx_circle(MXP(SCR_W - 40 - gfx_text_width(cnt, 12, 0)) + cosf(an) * 6, 36 + sinf(an) * 6, 1.8f, WITH_ALPHA(C_TEXT, 60 + i * 30)); } }
+    /* category tabs */
+    float tx = 28;
+    for (int c = -1; c < GP_COUNT; c++) {
+        const char *nm = c < 0 ? T(S_ALL) : plat_name(c);
+        float w = gfx_text_width(nm, 13, 1) + 28;
+        int on = c == gm_cat;
+        if (on) L_grad_pill(tx, 60, w, 28, 14, plat_color(c < 0 ? GP_PS3 : c), WITH_ALPHA(C_ACC2, 230));
+        else L_rrect(tx, 60, w, 28, 14, RGBA8(255, 255, 255, 16));
+        L_text(tx + w / 2, 66, nm, 13, 1, on ? C_TEXT : C_DIM, ALIGN_CENTER);
+        tx += w + 8;
+    }
+    if (!gm_n) {
+        if (!games_scanning()) L_text_fit(SCR_W / 2, 250, SCR_W - 80, T(S_NO_GAMES), 14, 0, C_DIM, ALIGN_CENTER);
+        return;
+    }
+    /* grid */
+    int row = gm_sel / GM_COLS;
+    if (row < gm_top) gm_top = row;
+    if (row >= gm_top + GM_ROWS) gm_top = row - GM_ROWS + 1;
+    int from = gm_top * GM_COLS, to = from + GM_COLS * GM_ROWS - 1;
+    /* covers for the visible rows plus one row each side */
+    int wf = from - GM_COLS, wt = to + GM_COLS;
+    if (wf < 0) wf = 0;
+    if (wt >= gm_n) wt = gm_n - 1;
+    if (wt >= 0) games_window(gm_idx[wf], gm_idx[wt]);
+    float cw = 112, ch = 156, gx = (SCR_W - (GM_COLS * cw + (GM_COLS - 1) * 22)) / 2, gy = 104;
+    for (int k = from; k <= to && k < gm_n; k++) {
+        game_t *g = games_get(gm_idx[k]);
+        if (!g) continue;
+        int r = (k - from) / GM_COLS, c = (k - from) % GM_COLS;
+        float x = gx + c * (cw + 22), y = gy + r * (ch + 46) + (1 - a) * 30;
+        int on = k == gm_sel;
+        float lift = on ? -6 : 0;
+        float sc = on ? 1.06f : 1.0f;
+        float w = cw * sc, h = ch * sc, xx = x - (w - cw) / 2, yy = y - (h - ch) / 2 + lift;
+        if (on) gfx_glow(MXP(xx + w / 2), yy + h / 2, w * 0.9f, WITH_ALPHA(plat_color(g->plat), 120));
+        gfx_rect(MX(xx + 4, w), yy + 6, w, h, RGBA8(0, 0, 0, 70));
+        if (g->cov == GC_READY && g->tex) {
+            gfx_texture(g->tex, MX(xx, w), yy, w, h, 0xFFFFFFFF);
+        } else {
+            gfx_rrect_grad(MX(xx, w), yy, w, h, 10, plat_color(g->plat), RGBA8(20, 18, 50, 255));
+            gfx_text(MXP(xx + w / 2), yy + 18, plat_name(g->plat), 16, 1, WITH_ALPHA(C_TEXT, 200), ALIGN_CENTER);
+            gfx_text_fit(MXP(xx + w / 2), yy + h / 2 - 8, w - 14, g->title, 11, 1, C_TEXT, ALIGN_CENTER);
+            if (g->cov == GC_LOADING || g->cov == GC_PENDING) { float tt = gfx_frame() / 60.0f; gfx_circle(MXP(xx + w / 2) + cosf(tt * 6) * 8, yy + h - 24 + sinf(tt * 6) * 8, 2.5f, C_TEXT); }
+        }
+        if (on) gfx_rrect_border(MX(xx - 3, w + 6), yy - 3, w + 6, h + 6, 10, 2.5f, RGBA8(255, 255, 255, 200 + (int)(sinf(gfx_frame() * 0.12f) * 50)));
+        /* platform badge */
+        float bw = gfx_text_width(plat_name(g->plat), 9, 1) + 12;
+        gfx_rrect(MX(xx + w - bw - 5, bw), yy + 5, bw, 15, 7, WITH_ALPHA(plat_color(g->plat), 235));
+        gfx_text(MXP(xx + w - bw / 2 - 5), yy + 7, plat_name(g->plat), 9, 1, C_TEXT, ALIGN_CENTER);
+        gfx_text_fit(MXP(x + cw / 2), y + ch + 8, cw + 16, g->title, 11, on, on ? C_TEXT : C_DIM, ALIGN_CENTER);
+    }
+    /* selected game details */
+    game_t *g = games_get(gm_idx[gm_sel]);
+    if (g) {
+        char info[200];
+        snprintf(info, sizeof(info), "%s  \xC2\xB7  %s  \xC2\xB7  %s", plat_name(g->plat), g->drive, g->name);
+        L_text_fit(28, SCR_H - 66, SCR_W - 56, info, 11, 0, C_DIM, ALIGN_LEFT);
+    }
+    /* scrollbar */
+    int rows = (gm_n + GM_COLS - 1) / GM_COLS;
+    if (rows > GM_ROWS) {
+        float track = 2 * (ch + 46) - 20, th = track * GM_ROWS / rows;
+        float ty = gy + (track - th) * gm_top / (rows - GM_ROWS);
+        gfx_rrect(MX(SCR_W - 14, 4), gy, 4, track, 2, RGBA8(255, 255, 255, 20));
+        gfx_rrect(MX(SCR_W - 14, 4), ty, 4, th, 2, WITH_ALPHA(C_ACC2, 200));
+    }
+}
+
+static void handle_games(void)
+{
+    gm_filter();
+    uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
+    if (in_pressed & B_CANCEL) { games_mode = 0; ui = UI_BROWSE; return; }
+    if (in_pressed & B_SELECT) { games_scan(vols, vol_count); gm_sel = 0; gm_top = 0; return; }
+    if (in_pressed & (B_L1 | B_R1)) {
+        gm_cat += (in_pressed & B_R1) ? 1 : -1;
+        if (gm_cat >= GP_COUNT) gm_cat = -1;
+        if (gm_cat < -1) gm_cat = GP_COUNT - 1;
+        gm_sel = 0; gm_top = 0; gm_anim = 0.4f;
+        return;
+    }
+    if (!gm_n) return;
+    if (in_active & R) { if (gm_sel + 1 < gm_n) gm_sel++; }
+    if (in_active & L) { if (gm_sel > 0) gm_sel--; }
+    if (in_active & B_DOWN) { if (gm_sel + GM_COLS < gm_n) gm_sel += GM_COLS; else if (gm_sel / GM_COLS < (gm_n - 1) / GM_COLS) gm_sel = gm_n - 1; }
+    if (in_active & B_UP) { if (gm_sel >= GM_COLS) gm_sel -= GM_COLS; }
+    if (in_active & B_R2) { gm_sel += GM_COLS * GM_ROWS; if (gm_sel >= gm_n) gm_sel = gm_n - 1; }
+    if (in_active & B_L2) { gm_sel -= GM_COLS * GM_ROWS; if (gm_sel < 0) gm_sel = 0; }
+    game_t *g = games_get(gm_idx[gm_sel]);
+    if (!g) return;
+    if (in_pressed & B_TRI) {
+        /* open the game's folder in the file list */
+        char dir[1024]; snprintf(dir, sizeof(dir), "%s", g->path);
+        char *s = strrchr(dir, '/'); if (s) *s = 0;
+        games_mode = 0; ui = UI_BROWSE; focus_list = 1; games_btn = 0;
+        open_dir(dir, g->name);
+        return;
+    }
+    if (in_pressed & B_OK) {
+        snprintf(launch_src, sizeof(launch_src), "%s", g->path);
+        launch_sys = SYS_WEBMAN;
+        confirm_sel = 0;
+        open_modal(UI_CONFIRM_LAUNCH);
+    }
 }
 
 /* ---------- built-in video player ---------- */
@@ -2293,9 +2470,16 @@ static void handle_browse(void)
     if (in_pressed & B_START) { set_sel = 0; open_modal(UI_SETTINGS); return; }
     if (in_pressed & B_R3) { ui = UI_SCANNING; return; }
 
+    if (in_pressed & B_L3) { games_open(); return; }
     if (!focus_list) {
+        if (games_btn) {
+            if (in_active & B_UP) games_btn = 0;
+            if (in_pressed & B_OK) { games_open(); return; }
+            if (in_pressed & R) { games_btn = 0; focus_list = 1; }
+            return;
+        }
         if (in_active & B_UP) select_volume(vol_sel - 1);
-        if (in_active & B_DOWN) select_volume(vol_sel + 1);
+        if (in_active & B_DOWN) { if (vol_sel == vol_count - 1) games_btn = 1; else select_volume(vol_sel + 1); }
         if (in_pressed & (R | B_OK)) focus_list = 1;
         return;
     }
@@ -2522,8 +2706,8 @@ int main(void)
         case UI_CONFIRM_LAUNCH: {
             uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
             if (in_pressed & (L | R)) confirm_sel = !confirm_sel;
-            if (in_pressed & B_CANCEL) ui = UI_BROWSE;
-            else if (in_pressed & B_OK) { if (confirm_sel == 0) { ui = UI_LAUNCHING; scan_frames = 0; } else ui = UI_BROWSE; }
+            if (in_pressed & B_CANCEL) ui = games_mode ? UI_GAMES : UI_BROWSE;
+            else if (in_pressed & B_OK) { if (confirm_sel == 0) { ui = UI_LAUNCHING; scan_frames = 0; } else ui = games_mode ? UI_GAMES : UI_BROWSE; }
             break;
         }
         case UI_LAUNCHING:
@@ -2531,6 +2715,7 @@ int main(void)
             break;
         case UI_AUDIO: handle_audio(); break;
         case UI_VIDEO: handle_video(); break;
+        case UI_GAMES: handle_games(); break;
         case UI_TEXT: handle_text(); break;
         case UI_HEX: handle_hex(); break;
         case UI_SFO:
@@ -2559,6 +2744,18 @@ int main(void)
                 hint_t h[6] = { { ok_icon, S_PAUSE }, { BTN_SQUARE, S_SUBTITLES }, { BTN_TRIANGLE, S_AUDIO_TRK }, { BTN_L1, S_SEEK60 }, { BTN_START, S_SETTINGS }, { cancel_icon, S_STOP } };
                 draw_hints(h, 6);
             }
+            draw_toast();
+            gfx_end_frame();
+            continue;
+        }
+        if (games_mode && (ui == UI_GAMES || ui == UI_CONFIRM_LAUNCH || ui == UI_LAUNCHING)) {
+            draw_background(t);
+            draw_games();
+            if (ui == UI_GAMES) {
+                hint_t h[6] = { { ok_icon, S_PLAY }, { BTN_L1, S_CATEGORY }, { BTN_TRIANGLE, S_OPEN_FOLDER }, { BTN_SELECT, S_RESCAN }, { cancel_icon, S_BACK } };
+                draw_hints(h, 5);
+            } else if (ui == UI_CONFIRM_LAUNCH) draw_confirm_launch();
+            else { float x2, y2; draw_modal_frame(360, 110, &x2, &y2); gfx_text(SCR_W / 2, y2 + 44, T(S_PREPARING), 15, 1, C_TEXT, ALIGN_CENTER); }
             draw_toast();
             gfx_end_frame();
             continue;
@@ -2637,6 +2834,7 @@ int main(void)
     ftp_stop_async();
     covers_stop_async();
     loader_stop();          /* local files only: finishes quickly */
+    games_stop();
     free_entries();
     vfs_shutdown();
     gfx_shutdown();
