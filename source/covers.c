@@ -661,12 +661,13 @@ int covers_catalog_lookup(const char *title_id, char *out_path, int n)
     }
     char key[200];
     snprintf(key, sizeof(key), "cat_%s", title_id);
-    int st = cached(key, out_path, n);
-    if (st != CV_NONE) return st;
     char path[700];
     snprintf(path, sizeof(path), "%s/%s.jpg", cache_dir, title_id);
     if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
     snprintf(path, sizeof(path), "%s/%s.png", cache_dir, title_id);
     if (vfs_exists(path)) { snprintf(out_path, n, "%s", path); return CV_CACHED; }
+    /* A user-provided image takes priority over previous .none cache entries. */
+    int st = cached(key, out_path, n);
+    if (st != CV_NONE) return st;
     return queue(S_PS3, title_id, key);
 }
