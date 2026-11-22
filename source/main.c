@@ -3028,7 +3028,10 @@ int main(void)
         }
         if (ui == UI_TOOLS || (ui == UI_OSK && (osk_purpose == 5 || osk_purpose == 9)) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
             draw_background(t);
-            draw_tools();
+            /* Never read USB save metadata or decode ICON0 while a background
+             * restore worker is accessing the same FAT/exFAT filesystem.
+             * FatFs file system calls may not be re-entrant on PS3. */
+            if (ui == UI_TOOLS || ui == UI_OSK) draw_tools();
             if (ui == UI_TOOLS) draw_tools_hints();
             else if (ui == UI_PROGRESS_OPS) draw_progress_ops();
             else if (ui == UI_RESULT_OPS) draw_result_ops();
