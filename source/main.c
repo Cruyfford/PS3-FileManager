@@ -33,6 +33,8 @@
 #include "webman.h"
 #include "covers.h"
 #include "theme.h"
+#include "disc.h"
+#include "tools.h"
 #define SYS_WEBMAN 100
 #define SYS_MOVIAN 101
 
@@ -337,6 +339,7 @@ static void select_volume(int i)
 static int games_btn;        /* sidebar focus is on the My Games button */
 static int games_mode;       /* the games screen is the base view */
 static void games_open(void);
+static void tools_open(void);
 
 static int marked_count(void)
 {
@@ -487,7 +490,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO, UI_GAMES };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO, UI_GAMES, UI_TOOLS };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -621,7 +624,7 @@ static void draw_sidebar(void)
     L_border(x, y, w, h, 16, 1, C_EDGE);
     L_text(x + 18, y + 14, T(S_DEVICES), 11, 1, C_DIM, ALIGN_LEFT);
 
-    int visible = (int)((h - 44 - 48) / ih);
+    int visible = (int)((h - 44 - 96) / ih);
     if (vol_sel < vol_scroll) vol_scroll = vol_sel;
     if (vol_sel >= vol_scroll + visible) vol_scroll = vol_sel - visible + 1;
 
@@ -644,7 +647,23 @@ static void draw_sidebar(void)
     /* "My Games" button */
     {
         float by = y + h - 50, bh = 40;
-        int on = games_btn && !focus_list;
+        int on = games_btn == 1 && !focus_list;
+        /* "Tools" button above it */
+        {
+            float ty = by - 46;
+            int ton = games_btn == 2 && !focus_list;
+            if (ton) {
+                L_grad_pill(x + 8, ty, w - 16, bh, 12, RGBA8(40, 200, 150, 235), RGBA8(40, 120, 200, 235));
+                L_border(x + 8, ty, w - 16, bh, 12, 1.4f, RGBA8(255, 255, 255, 150 + (int)(sinf(gfx_frame() * 0.1f) * 60)));
+            } else {
+                L_rrect(x + 8, ty, w - 16, bh, 12, RGBA8(255, 255, 255, 14));
+                L_border(x + 8, ty, w - 16, bh, 12, 1, RGBA8(80, 220, 170, 90));
+            }
+            float gx = MXP(x + 31), gy = ty + 20;
+            gfx_circle(gx, gy, 9, ton ? C_TEXT : RGBA8(110, 230, 190, 255));
+            gfx_circle(gx, gy, 4, ton ? RGBA8(40, 140, 170, 255) : RGBA8(20, 18, 50, 255));
+            L_text_fit(x + 50, ty + 11, w - 70, T(S_TOOLS), 14, 1, ton ? C_TEXT : RGBA8(160, 240, 210, 255), ALIGN_LEFT);
+        }
         if (on) {
             L_grad_pill(x + 8, by, w - 16, bh, 12, RGBA8(255, 120, 80, 235), RGBA8(200, 60, 160, 235));
             L_border(x + 8, by, w - 16, bh, 12, 1.4f, RGBA8(255, 255, 255, 150 + (int)(sinf(gfx_frame() * 0.1f) * 60)));
@@ -913,8 +932,8 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_UNISO, M_TOOLS, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_T_UNISO, S_TOOLS, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
 static int find_movian(void);
 static void ask_launch(int idx);
@@ -983,6 +1002,7 @@ static void build_menu(void)
         if (m == M_EXTRACT_ARC && !(ent_count && archive_kind(ents[sel].name) != ARC_NONE)) continue;
         if ((m == M_OPEN_TEXT || m == M_OPEN_HEX) && !(ent_count && !ents[sel].is_dir)) continue;
         if (m == M_PASTE && !clip_n) continue;
+        if (m == M_UNISO && !(ent_count && !marked_count() && !ents[sel].is_dir && iso_is_image(ents[sel].name))) continue;
         menu_items[menu_n++] = m;
     }
     menu_sel = 0;
@@ -1075,10 +1095,10 @@ static void draw_progress_ops(void)
     draw_modal_frame(w, h, &x, &y);
     const char *t = s->op == OP_DELETE ? T(S_DELETING) : s->op == OP_MOVE ? T(S_MOVING) :
                     s->op == OP_EXTRACT ? T(S_EXTRACTING) : s->op == OP_BUILD ? T(S_BUILDING) :
-                    s->op == OP_UNARCHIVE ? T(S_UNARCHIVING) : T(S_COPYING);
+                    s->op == OP_UNARCHIVE ? T(S_UNARCHIVING) : s->op == OP_DISC ? T(S_DUMPING) : s->op == OP_UNISO ? T(S_T_UNISO) : T(S_COPYING);
     gfx_text(SCR_W / 2, y + 20, t, 20, 1, C_TEXT, ALIGN_CENTER);
     char nfo[64];
-    if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE) snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
+    if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE || s->op == OP_DISC || s->op == OP_UNISO) snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
     else snprintf(nfo, sizeof(nfo), T(S_FILE_OF), (int)s->files_done, (int)s->files_total);
     gfx_text(SCR_W / 2, y + 48, nfo, 12, 0, C_DIM, ALIGN_CENTER);
     gfx_text_fit(SCR_W / 2, y + 74, w - 60, s->current, 15, 1, C_TEXT, ALIGN_CENTER);
@@ -1138,8 +1158,8 @@ static void draw_result_ops(void)
         gfx_text(cx, y + 130, nfo, 12, 0, C_DIM, ALIGN_CENTER);
         if (thm_installing && s->op == OP_COPY) {
             draw_lines(cx, y + 150, T(S_THEME_APPLY), 11, 0, C_DIM, ALIGN_CENTER, 16);
-        } else if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE) {
-            char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), ops_output);
+        } else if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE || s->op == OP_DISC || s->op == OP_UNISO) {
+            char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), s->op == OP_DISC ? ops_out_path() : ops_output);
             gfx_text_fit(cx, y + 150, w - 50, o, 11, 0, C_DIM, ALIGN_CENTER);
         }
     } else {
@@ -2081,6 +2101,9 @@ static int hex_save(void)
 }
 
 #define HEX_ROWS 18
+static int tbl_n; static char tbl_name[256];
+static void tbl_row_text(uint64_t ro, char *out, int on);
+static void tbl_cycle(void);
 static void draw_hex(void)
 {
     gfx_grad_v(0, 0, SCR_W, SCR_H, RGBA8(12, 14, 30, 255), RGBA8(18, 10, 34, 255));
@@ -2089,7 +2112,7 @@ static void draw_hex(void)
     hex_fill_cache();
     char head[1600], sz[32];
     fmt_size(hex_size, sz, sizeof(sz));
-    snprintf(head, sizeof(head), "%s  (%s)%s", hex_path, sz, hex_edits ? "  \xE2\x80\xA2" : "");
+    snprintf(head, sizeof(head), "%s  (%s)%s%s%s", hex_path, sz, tbl_n ? "  \xC2\xB7  TBL: " : "", tbl_n ? tbl_name : "", hex_edits ? "  \xE2\x80\xA2" : "");
     gfx_rrect(16, 12, SCR_W - 32, 30, 15, RGBA8(255, 255, 255, 16));
     gfx_text_fit(30, 18, SCR_W - 220, head, 12, 1, hex_edits ? RGBA8(255, 200, 120, 255) : C_TEXT, ALIGN_LEFT);
     char pos[48]; snprintf(pos, sizeof(pos), "%s 0x%08llX", T(S_OFFSET), (unsigned long long)hex_cur);
@@ -2114,7 +2137,8 @@ static void draw_hex(void)
             ascii[c] = (v >= 32 && v < 127) ? (char)v : '.';
         }
         ascii[16] = 0;
-        gfx_text(650, ly, ascii, 12, 0, C_DIM, ALIGN_LEFT);
+        if (tbl_n) { char tx[512]; tbl_row_text(ro, tx, sizeof(tx)); gfx_text_fit(650, ly, SCR_W - 670, tx, 12, 0, RGBA8(170, 220, 255, 255), ALIGN_LEFT); }
+        else gfx_text(650, ly, ascii, 12, 0, C_DIM, ALIGN_LEFT);
     }
 }
 
@@ -2139,6 +2163,9 @@ static void handle_hex(void)
         if (!cur_writable()) show_toast(T(S_READONLY_FILE));
         else show_toast(hex_save() ? T(S_SAVED) : T(S_SAVE_FAIL));
     }
+    if (in_pressed & B_SELECT) tbl_cycle();
+    if ((in_pressed & B_SQU) && hex_size) { osk_purpose = 6; if (osk_open(T(S_TBL_FIND), "")) ui = UI_OSK; }
+    if ((in_pressed & B_TRI) && hex_size) { osk_purpose = 7; if (osk_open(T(S_TBL_WRITE), "")) ui = UI_OSK; }
     if ((in_pressed & B_CANCEL) && confirm_discard(hex_edits > 0)) { ui = UI_BROWSE; refresh_keep_wrapper(); }
 }
 
@@ -2457,6 +2484,20 @@ static void run_menu_action(int m)
     }
     case M_PROPS: open_props(); break;
     case M_REFRESH: ui = UI_SCANNING; break;
+    case M_TOOLS: tools_open(); break;
+    case M_UNISO: {
+        char src[1400], dst[1400], base[256];
+        path_join(src, sizeof(src), cwd, ents[sel].name);
+        snprintf(base, sizeof(base), "%s", ents[sel].name);
+        size_t bl = strlen(base);
+        if (bl > 6 && !strcasecmp(base + bl - 6, ".iso.0")) base[bl - 6] = 0;
+        else { char *dot = strrchr(base, '.'); if (dot) *dot = 0; }
+        path_join(dst, sizeof(dst), cur_writable() ? cwd : "/dev_hdd0/tmp", base);
+        if (!cur_writable()) vfs_mkdir("/dev_hdd0/tmp");
+        snprintf(ops_output, sizeof(ops_output), "%s", dst);
+        if (ops_start_uniso(src, dst)) open_modal(UI_PROGRESS_OPS);
+        break;
+    }
     case M_SETTINGS: set_sel = 0; open_modal(UI_SETTINGS); break;
     }
 }
@@ -2473,13 +2514,14 @@ static void handle_browse(void)
     if (in_pressed & B_L3) { games_open(); return; }
     if (!focus_list) {
         if (games_btn) {
-            if (in_active & B_UP) games_btn = 0;
-            if (in_pressed & B_OK) { games_open(); return; }
+            if (in_active & B_UP) games_btn = games_btn == 1 ? 2 : 0;
+            else if (in_active & B_DOWN) games_btn = 1;
+            if (in_pressed & B_OK) { if (games_btn == 1) games_open(); else tools_open(); return; }
             if (in_pressed & R) { games_btn = 0; focus_list = 1; }
             return;
         }
         if (in_active & B_UP) select_volume(vol_sel - 1);
-        if (in_active & B_DOWN) { if (vol_sel == vol_count - 1) games_btn = 1; else select_volume(vol_sel + 1); }
+        if (in_active & B_DOWN) { if (vol_sel == vol_count - 1) games_btn = 2; else select_volume(vol_sel + 1); }
         if (in_pressed & (R | B_OK)) focus_list = 1;
         return;
     }
@@ -2535,6 +2577,8 @@ static void handle_settings(void)
     if (in_pressed & (B_CANCEL | B_START)) ui = UI_BROWSE;
 }
 
+#include "tools_ui.inc"
+
 static void handle_osk(void)
 {
     char out[512];
@@ -2558,6 +2602,17 @@ static void handle_osk(void)
             if (e >= 0) hex_edit_val[e] = (uint8_t)v;
             if (hex_cur + 1 < hex_size) hex_cur++;
         }
+        return;
+    }
+    if (osk_purpose == 5) {
+        ui = UI_TOOLS;
+        if (r == OSK_RESULT_OK && out[0]) { snprintf(sr_q, sizeof(sr_q), "%s", out); sr_run(); }
+        else if (!sr_q[0] || !search_count()) tl_scr = TS_HUB;
+        return;
+    }
+    if (osk_purpose == 6 || osk_purpose == 7) {
+        ui = UI_HEX;
+        if (r == OSK_RESULT_OK && out[0]) { if (osk_purpose == 6) hex_find_text(out); else hex_write_text(out); }
         return;
     }
     if (osk_purpose == 2) {
@@ -2695,6 +2750,7 @@ int main(void)
                 }
                 play_after_copy = 0;
                 ops_reset();
+                if (ops_ret_tools) { ops_ret_tools = 0; ui = UI_TOOLS; tools_after_ops(); break; }
                 for (int i = 0; i < ent_count; i++) ents[i].marked = 0;
                 refresh_keep();
                 ui = UI_BROWSE;
@@ -2716,6 +2772,7 @@ int main(void)
         case UI_AUDIO: handle_audio(); break;
         case UI_VIDEO: handle_video(); break;
         case UI_GAMES: handle_games(); break;
+        case UI_TOOLS: handle_tools(); break;
         case UI_TEXT: handle_text(); break;
         case UI_HEX: handle_hex(); break;
         case UI_SFO:
@@ -2760,6 +2817,16 @@ int main(void)
             gfx_end_frame();
             continue;
         }
+        if (ui == UI_TOOLS || (ui == UI_OSK && osk_purpose == 5) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
+            draw_background(t);
+            draw_tools();
+            if (ui == UI_TOOLS) draw_tools_hints();
+            else if (ui == UI_PROGRESS_OPS) draw_progress_ops();
+            else if (ui == UI_RESULT_OPS) draw_result_ops();
+            draw_toast();
+            gfx_end_frame();
+            continue;
+        }
         draw_background(t);
         draw_header();
         draw_sidebar();
@@ -2786,10 +2853,10 @@ int main(void)
             draw_text_editor();
             hint_t h[6] = { { ok_icon, S_EDIT_LINE }, { BTN_SQUARE, S_NEW_LINE }, { BTN_SELECT, S_DEL_LINE }, { BTN_START, S_SAVE }, { cancel_icon, S_BACK } };
             draw_hints(h, 5);
-        } else if (ui == UI_HEX || (ui == UI_OSK && osk_purpose == 4)) {
+        } else if (ui == UI_HEX || (ui == UI_OSK && osk_purpose >= 4 && osk_purpose <= 7 && osk_purpose != 5)) {
             draw_hex();
-            hint_t h[5] = { { ok_icon, S_EDIT_BYTE }, { BTN_L1, S_JUMP }, { BTN_START, S_SAVE }, { cancel_icon, S_BACK } };
-            draw_hints(h, 4);
+            hint_t h[7] = { { ok_icon, S_EDIT_BYTE }, { BTN_SQUARE, S_TBL_FIND }, { BTN_TRIANGLE, S_TBL_WRITE }, { BTN_SELECT, S_TBL_LOAD }, { BTN_L1, S_JUMP }, { BTN_START, S_SAVE }, { cancel_icon, S_BACK } };
+            draw_hints(h, 7);
         } else if (ui == UI_THEME) {
             draw_theme();
             hint_t h[2]; int n = 0;

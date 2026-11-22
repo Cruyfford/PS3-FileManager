@@ -17,7 +17,7 @@ include $(PSL1GHT)/ppu_rules
 
 TARGET		:=	FileManager
 BUILD		:=	build
-SOURCES		:=	source third_party/a52
+SOURCES		:=	source third_party/a52 third_party/makeps3iso
 DATA		:=	data
 INCLUDES	:=	include third_party/a52
 PKGFILES	:=	$(CURDIR)/pkgfiles

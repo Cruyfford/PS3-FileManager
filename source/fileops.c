@@ -3,6 +3,7 @@
 #include "vfs.h"
 #include "pkgtool.h"
 #include "archive.h"
+#include "disc.h"
 #include <sys/thread.h>
 #include <sys/systime.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@ static char (*q_src)[1024];
 static int q_n, q_op;
 static char q_dst[1024];
 static char q_cid[64];
+static char q_out[1024];
 static volatile int cancel_flag;
 static sys_ppu_thread_t thr;
 static int thr_alive;
@@ -311,6 +313,15 @@ static void worker(void *arg)
         return;
     }
 
+    if (q_op == OP_DISC || q_op == OP_UNISO) {
+        if (q_op == OP_DISC) err = disc_dump(q_cid[0] == '1', q_dst, &cancel_flag, pt_cb, &st.bytes_total, st.error_path, sizeof(st.error_path), q_out, sizeof(q_out));
+        else { snprintf(q_out, sizeof(q_out), "%s", q_dst); err = iso_extract(q_src[0], q_dst, &cancel_flag, pt_cb, &st.bytes_total, st.error_path, sizeof(st.error_path)); }
+        st.error = err;
+        st.state = cancel_flag ? OPS_CANCELLED : err ? OPS_ERROR : OPS_DONE;
+        sysThreadExit(0);
+        return;
+    }
+
     if (q_op == OP_EXTRACT || q_op == OP_BUILD) {
         if (q_op == OP_EXTRACT)
             err = pkgtool_extract(q_src[0], q_dst, &cancel_flag, pt_cb, &st.bytes_total, st.error_path, sizeof(st.error_path));
@@ -376,7 +387,7 @@ int ops_start(int op, char srcs[][1024], int n, const char *dst_dir)
     cancel_flag = 0;
     st.op = op;
     st.state = OPS_RUNNING;
-    if (sysThreadCreate(&thr, worker, NULL, 1200, 0x40000, THREAD_JOINABLE, "fileops") != 0) {
+    if (sysThreadCreate(&thr, worker, NULL, 1200, 0x100000, THREAD_JOINABLE, "fileops") != 0) {
         st.state = OPS_ERROR; st.error = OPE_MEM; thr_alive = 0;
         return 0;
     }
@@ -395,6 +406,9 @@ static int start_tool(int op, const char *src, const char *dst, const char *cid)
 int ops_start_extract(const char *pkg_path, const char *out_dir) { return start_tool(OP_EXTRACT, pkg_path, out_dir, NULL); }
 int ops_start_build(const char *folder, const char *out_pkg, const char *cid) { return start_tool(OP_BUILD, folder, out_pkg, cid); }
 int ops_start_unarchive(const char *arc, const char *dest) { return start_tool(OP_UNARCHIVE, arc, dest, NULL); }
+int ops_start_disc(int mode, const char *dst) { q_out[0] = 0; return start_tool(OP_DISC, "/dev_bdvd", dst, mode ? "1" : "0"); }
+int ops_start_uniso(const char *img, const char *dst) { q_out[0] = 0; return start_tool(OP_UNISO, img, dst, NULL); }
+const char *ops_out_path(void) { return q_out; }
 
 /* ---------- folder size ---------- */
 static volatile int ds_done = 1;
