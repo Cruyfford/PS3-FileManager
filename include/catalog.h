@@ -4,7 +4,7 @@
 /* ARCADIA catalog is user-supplied data, not a license or an installer.
  * The catalog is streamed and paged to avoid loading thousands of records. */
 #define CAT_PAGE_SIZE 80
-enum { CAT_ALL=0, CAT_GAMES=1, CAT_DLC=2, CAT_TOOLS=3 };
+enum { CAT_ALL=0, CAT_PS3=1, CAT_PS2=2, CAT_PSP=3, CAT_PS1=4, CAT_APPS=5, CAT_THEMES=6, CAT_DLC=7, CAT_CATEGORY_COUNT=8 };
 enum { CAT_DL_IDLE=0, CAT_DL_RUNNING=1, CAT_DL_DONE=2, CAT_DL_FAILED=3, CAT_DL_CANCELLED=4 };
 
 typedef struct {
@@ -21,7 +21,7 @@ const char *catalog_source(void);
 
 /* Only recognized direct .pkg URLs may be downloaded.
  * No DRM, license bypass, RAP, automatic installation or page scraping. */
-int catalog_is_direct_pkg(const catalog_item_t *item);
+int catalog_is_direct_pkg(const catalog_item_t *item); /* supported .pkg or .p3t direct file */
 int catalog_download_start(const catalog_item_t *item);
 int catalog_download_state(void);
 void catalog_download_progress(uint64_t *done, uint64_t *total);
