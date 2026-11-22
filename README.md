@@ -109,15 +109,26 @@ Open **Tools → ARCADIA Store**. Use `L1/R1` to switch between **All / PS3 / PS
 - `Copy to Editing Workspace` تنشئ نسخة بعيدة عن ملفات الحفظ الحية لاستخدام محرر HEX، لكنها **لا تفك تشفير PARAM.PFD ولا تعيد توقيعه**. تعديل ملفات حفظ محمية بلا مفاتيح وتوقيع صالح قد يجعلها غير قابلة للتحميل.
 - راجع الحفظ قبل حذفه واختبر الميزة أولًا بحفظ غير مهم على PS3 HEN. نجاح البناء البرمجي لا يثبت تلقائيًا نجاح تشغيل كل نظام ملفات على الجهاز.
 
-## Save Data Manager — five-action menu (crypto integration in progress)
+## Save Data Manager — PS3 save operations
 
-- **Tools → Save Data Manager:** highlight a saved game and press **✕** to open the five-action panel: **Decrypt Save Data**, **Edit Save Data**, **Encrypt Save Data**, **Resign Save Data**, **Backup / Restore**.
-- **Edit Save Data** makes an independent copy in `/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE/` and opens it in the file browser, where the existing Hex Editor can be used. The *original* save is left untouched.
-- **Backup / Restore** executes the existing real USB backup or safe PS3 HDD restoration. Restoring into a PS3 account requires a second ✕ confirmation; the backup/transactional restore process retains the previous save.
-- Press **△** on any save to get the separate **Copy / Editing Copy / Move to Trash** menu implemented in the previous release.
-- **Decrypt / Encrypt / Resign** currently display **LOCKED** and deliberately refuse to modify any file. The menu reads `PARAM.PFD` *without changing it* and reports whether its v3/v4 header/entry layout is recognized. This is a format probe, **not** decryption or cryptographic verification. These functions are **not yet functional**: they require an independently integrated and tested PS3 `PARAM.PFD` crypto/hash implementation, correct per-file secure-file IDs, and PS3 account/console identifiers. There is no deceptive dummy decryption or fake success message.
-- License integration note: Apollo Save Tool's code is GPLv3. This repository currently carries a GPLv2 license, so upstream source cannot simply be pasted into the application without resolving copyright and license compatibility. The existing license has not been changed.
-- Test the functional edit/backup features on a disposable saved game on PS3 HEN before relying on them. Cryptographic save changes are intentionally disabled until validated.
+Select a game save under **Tools → Save Data Manager**, then press **✕** to open the five-action menu:
+
+| Menu | Current behavior |
+| --- | --- |
+| **Decrypt Save Data** | Read-only PARAM.PFD v3/v4 format check, not yet able to decrypt game-protected files. Reports the PFD version/count or missing format, without modifying the save. |
+| **Edit Save Data** | Creates an isolated backup under `/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE/`, opens it in the integrated file browser; editing raw bytes is available through the existing HEX editor. |
+| **Encrypt Save Data** | Disabled for protected game data until the corresponding per-file Secure File ID and matching crypto implementation can be verified. |
+| **Resign Save Data** | **Limited real operation:** for saves whose PFD contains *only* a `PARAM.SFO` entry, double-confirm ✕ to copy the entire save into `/dev_hdd0/CRUYFFORD_SAVE_CRYPTO/resign_...`, recalculate PFD signatures, verify PFD top/bottom integrity and open the resulting copy. All other saves are rejected. **It does not modify the live game save or silently restore the new copy.** |
+| **Backup / Restore** | Existing real backup and protected transactional restoration, with double-confirm on USB → PS3. |
+
+Press **△** on an individual save for Copy, Editing Copy, and Move to recoverable Trash.
+
+**Scope and limitations:** The PFD signer for metadata-only saves is derived from the MIT-licensed [SaveSync](https://github.com/Ganitzsh/ps3-savesync) by Julien Ganitzsh and includes the original MIT notice at `third_party/savesync_pfd/LICENSE`. It uses the existing PSL1GHT `polarssl` dependency; no copy of Apollo's GPLv3 implementation was included in the GPLv2 codebase.
+
+This metadata-only signer has been cross-compiled for PS3 but **not tested on a real HEN console**. A matching console profile and game-specific protection might still prevent a resign result from loading in a game. Always keep the original save and use disposable test data. The signer never touches the original, only a working copy. Never use a modified save for actual play until independently verified.
+
+**Encrypted game files are NOT yet supported.** A Secure File ID may differ for each file within the same saved game; we must integrate the full AES encryption/HMAC update backend, correct secure-file keys and regression test vectors before unlocking Decrypt/Encrypt/Resign for those games. The UI never reports false success or silently overwrites game saves.
+
 
 ## البناء عبر GitHub Actions
 1. أنشئ مستودعاً جديداً وارفع محتويات هذا المجلد كما هي (بما فيها `.github` و `third_party`).
