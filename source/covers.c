@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-enum { S_NONE, S_NES, S_SNES, S_GB, S_GBA, S_MD, S_PS1, S_PS2, S_PS3, S_DISC /* not yet known */, S_VIDEO };
+enum { S_NONE, S_NES, S_SNES, S_GB, S_GBA, S_MD, S_PS1, S_PS2, S_PS3, S_PSP, S_DISC /* not yet known */, S_VIDEO };
 
 static char cache_dir[512];
 static volatile int enabled = 1, gen, quit;
@@ -422,6 +422,7 @@ static const char *libretro_system(int sys)
         case S_MD: return "Sega - Mega Drive - Genesis";
         case S_PS1: return "Sony - PlayStation";
         case S_PS2: return "Sony - PlayStation 2";
+        case S_PSP: return "Sony - PlayStation Portable";
     }
     return NULL;
 }
@@ -689,10 +690,11 @@ int covers_catalog_lookup_platform(const char *title_id, const char *title,
     out[0]=0;
     if (!platform || !strcmp(platform,"PS3") || !strcmp(platform,"DLC"))
         return covers_catalog_lookup(title_id,out,n);
-    if (strcmp(platform,"PS1") && strcmp(platform,"PS2")) return CV_NONE;
-    int sys=!strcmp(platform,"PS1") ? S_PS1 : S_PS2;
+    if (strcmp(platform,"PS1") && strcmp(platform,"PS2") && strcmp(platform,"PSP")) return CV_NONE;
+    int sys=!strcmp(platform,"PS1") ? S_PS1 :
+            !strcmp(platform,"PS2") ? S_PS2 : S_PSP;
     char id[160], key[200], local[700];
-    if (title_id && strlen(title_id)>=9 && strlen(title_id)<32 &&
+    if (sys!=S_PSP && title_id && strlen(title_id)>=9 && strlen(title_id)<32 &&
         ((title_id[0]=='S' && title_id[1]=='L') ||
          (title_id[0]=='S' && title_id[1]=='C'))) {
         snprintf(id,sizeof(id),"%.4s-%s",title_id,title_id+4);
