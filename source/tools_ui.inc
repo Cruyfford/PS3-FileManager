@@ -441,6 +441,15 @@ static void sv_run(int only_selected)
         volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]];
         path_join(dst, sizeof(dst), v->root, "PS3"); vfs_mkdir(dst);
         path_join(dst, sizeof(dst), v->root, "PS3/SAVEDATA"); vfs_mkdir(dst);
+        /* Do not silently overwrite a previous USB backup from the action menu. */
+        if (only_selected) {
+            char existing[1024];
+            path_join(existing,sizeof(existing),dst,sv[sv_sel].dir);
+            if (vfs_exists(existing)) {
+                show_toast("Backup exists on USB: rename it before copying again");
+                return;
+            }
+        }
     } else {
         if (!sv_naccounts || !sv_user[0]) {
             show_toast("No PS3 user account for restore");
@@ -968,7 +977,6 @@ static void draw_tools_hints(void)
         case TS_SAVES:
             if (sv_action_open) {
                 h[n++] = (hint_t){ ok_icon, S_ENTER };
-                h[n++] = (hint_t){ cancel_icon, S_BACK };
             } else {
                 h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP };
                 h[n++] = (hint_t){ BTN_TRIANGLE, S_MENU };
