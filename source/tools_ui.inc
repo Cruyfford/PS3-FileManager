@@ -87,15 +87,17 @@ static void draw_tools_hub(void)
 
         if (wide) {
             L_text_fit(x+89, y+22, w-310, "ARCADIA Store", 23, 1, C_TEXT, ALIGN_LEFT);
+            /* The catalog uses English section names even when Tools is in RTL. */
             L_text_fit(x+89, y+58, w-310,
-                       g_lang ? "كتالوج الألعاب والإضافات والثيمات والبرامج"
-                              : "Games, DLC, themes and homebrew catalog",
+                       "Browse games, apps, themes and DLC",
                        12, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
-            const float tag_x = x+w-201, tag_y = y+30;
-            L_rrect(tag_x, tag_y, 178, 42, 12, RGBA8(7,22,58,on ? 170 : 125));
-            L_border(tag_x, tag_y, 178, 42, 12, 1, WITH_ALPHA(ca,140));
-            L_text_fit(tag_x+12, tag_y+13, 154, "GAMES | DLC | TOOLS",
+            const float tag_x = x+w-217, tag_y = y+25;
+            L_rrect(tag_x, tag_y, 194, 52, 12, RGBA8(7,22,58,on ? 170 : 125));
+            L_border(tag_x, tag_y, 194, 52, 12, 1, WITH_ALPHA(ca,140));
+            L_text_fit(tag_x+8, tag_y+8, 178, "PS3  |  PS2  |  PSP  |  PS1",
                        11, 1, C_TEXT, ALIGN_CENTER);
+            L_text_fit(tag_x+8, tag_y+29, 178, "APPS  |  THEMES  |  DLC",
+                       10, 1, C_TEXT, ALIGN_CENTER);
         } else {
             L_text_fit(x+84, y+29, w-101, T(tl_items[i][0]),
                        18, 1, C_TEXT, ALIGN_LEFT);
