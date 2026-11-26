@@ -3,7 +3,7 @@
 
 #define OPS_MAX_SRC 256
 
-enum { OP_COPY = 0, OP_MOVE, OP_DELETE, OP_EXTRACT, OP_BUILD, OP_UNARCHIVE, OP_DISC, OP_UNISO };
+enum { OP_COPY = 0, OP_MOVE, OP_DELETE, OP_EXTRACT, OP_BUILD, OP_UNARCHIVE, OP_DISC, OP_UNISO, OP_SAVE_RESTORE, OP_HASH, OP_PATCH, OP_MKPATCH, OP_TIMX };
 enum { OPS_IDLE = 0, OPS_RUNNING, OPS_DONE, OPS_ERROR, OPS_CANCELLED };
 enum { OPE_NONE = 0, OPE_SPACE, OPE_OPEN_SRC, OPE_OPEN_DST, OPE_READ, OPE_WRITE, OPE_MKDIR, OPE_DELETE, OPE_INTO_SELF, OPE_MEM };
 
@@ -28,6 +28,11 @@ int  ops_start_unarchive(const char *archive, const char *dest_dir);
 int  ops_start_disc(int mode, const char *dst_dir);
 int  ops_start_uniso(const char *image, const char *dst_dir);
 const char *ops_out_path(void);
+const char *ops_out_extra(void);                    /* OP_TIMX: number of images */
+int  ops_start_hash(const char *file);              /* result text in ops_out_path() */
+int  ops_start_timx(const char *file, const char *out_dir);
+/* create=0: a = patch, b = source file; create=1: a = original, b = modified. out = new file */
+int  ops_start_patch(int create, const char *a, const char *b, const char *out);
 void ops_cancel(void);
 
 /* background folder size for the Properties screen */

@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <sys/mutex.h>
 
 #define GLYPH_SLOT   64
@@ -85,8 +86,52 @@ void gfx_begin_frame(void)
     zc = 60000.0f;
 }
 
+/* ---------- screenshots: copy the shown framebuffer, encode PNG on a thread ---------- */
+#include "pngw.h"
+#include <sys/thread.h>
+static volatile int shot_req;                 /* frames to wait before capture */
+static char shot_path[512];
+static uint8_t *shot_px; static int shot_w, shot_h;
+static volatile int shot_busy, shot_result;   /* result: 0 none, 1 ok, -1 failed */
+static sys_ppu_thread_t shot_thr; static int shot_thr_on;
+
+static void shot_worker(void *a)
+{
+    (void)a;
+    shot_result = png_write(shot_path, shot_px, shot_w, shot_h, shot_w * 4, 1) ? 1 : -1;
+    free(shot_px); shot_px = NULL;
+    shot_busy = 0;
+    sysThreadExit(0);
+}
+
+int gfx_screenshot(const char *path)
+{
+    if (shot_busy || shot_req) return 0;
+    snprintf(shot_path, sizeof(shot_path), "%s", path);
+    shot_req = 2;            /* capture the frame after next, so the request itself isn't half-drawn */
+    return 1;
+}
+
+int gfx_screenshot_result(void) { int r = shot_result; if (r) shot_result = 0; return r; }
+
+static void shot_capture(void)
+{
+    int w = Video_Resolution.width, h = Video_Resolution.height;
+    u32 *fb = Video_buffer[Video_currentBuffer ^ 1];      /* the buffer that is on screen */
+    if (!fb || w <= 0 || h <= 0) { shot_result = -1; return; }
+    shot_px = malloc((size_t)w * h * 4);
+    if (!shot_px) { shot_result = -1; return; }
+    for (int y = 0; y < h; y++) memcpy(shot_px + (size_t)y * w * 4, (uint8_t *)fb + (size_t)y * Video_pitch, (size_t)w * 4);
+    shot_w = w; shot_h = h;
+    if (shot_thr_on) { u64 rv; sysThreadJoin(shot_thr, &rv); shot_thr_on = 0; }
+    shot_busy = 1;
+    if (sysThreadCreate(&shot_thr, shot_worker, NULL, 1500, 0x10000, THREAD_JOINABLE, "shot") == 0) shot_thr_on = 1;
+    else { shot_busy = 0; free(shot_px); shot_px = NULL; shot_result = -1; }
+}
+
 void gfx_end_frame(void)
 {
+    if (shot_req && --shot_req == 0) shot_capture();
     ya2d_screenFlip();
     frame_no++;
 }
@@ -347,6 +392,18 @@ texture_t gfx_create_argb(int w, int h)
 }
 
 uint8_t *gfx_texture_data(texture_t t) { return t ? (uint8_t *)t->data : NULL; }
+
+texture_t gfx_create_rgba(int w, int h, const uint8_t *rgba)
+{
+    texture_t t = gfx_create_argb(w, h);
+    if (!t) return NULL;
+    uint8_t *d = (uint8_t *)t->data;
+    for (int y = 0; y < h; y++) {
+        uint8_t *o = d + (size_t)y * t->rowBytes; const uint8_t *s = rgba + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++, o += 4, s += 4) { o[0] = s[3]; o[1] = s[0]; o[2] = s[1]; o[3] = s[2]; }
+    }
+    return t;
+}
 
 void gfx_draw_yuv(texture_t ty, texture_t tu, texture_t tv, float x, float y, float w, float h, float uw, float vh)
 {

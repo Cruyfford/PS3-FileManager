@@ -39,6 +39,7 @@ texture_t gfx_make_thumb(texture_t src, int maxw, int maxh);
 texture_t gfx_create_l8(int w, int h);
 texture_t gfx_create_argb(int w, int h);
 uint8_t *gfx_texture_data(texture_t t);
+texture_t gfx_create_rgba(int w, int h, const uint8_t *rgba);
 /* draw Y/U/V L8 planes with tiny3d's YUV shader; uw/vh = used fraction of each texture */
 void gfx_draw_yuv(texture_t ty, texture_t tu, texture_t tv, float x, float y, float w, float h, float uw, float vh);
 void gfx_texture(texture_t t, float x, float y, float w, float h, uint32_t tint);
@@ -55,3 +56,6 @@ enum { BTN_CROSS, BTN_CIRCLE, BTN_SQUARE, BTN_TRIANGLE, BTN_START, BTN_SELECT, B
 float gfx_button_icon(float x, float y, int btn, float size);
 
 uint64_t gfx_frame(void);
+/* PNG screenshot of the screen (written on a background thread) */
+int gfx_screenshot(const char *path);
+int gfx_screenshot_result(void);   /* 1 saved, -1 failed, 0 nothing new */

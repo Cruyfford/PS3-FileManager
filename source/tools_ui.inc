@@ -1,7 +1,8 @@
 /* =========================================================== Tools: disc copy, saves, space, search
  * (included by main.c — uses its drawing helpers and state) */
 
-enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH };
+enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH, TS_DL, TS_UPD, TS_NET };
+#define TL_N 7
 static int tl_scr, tl_sel, ops_ret_tools;
 static float tl_anim;
 
@@ -40,31 +41,39 @@ static void tl_spinner(float cx, float cy)
     for (int i = 0; i < 8; i++) { float an = tt * 5 + i * 0.785f; gfx_circle(cx + cosf(an) * 12, cy + sinf(an) * 12, 2.4f, WITH_ALPHA(C_TEXT, 40 + i * 26)); }
 }
 
-/* ---------------------------------------------------------------- hub */
-static const int tl_items[4][2] = { { S_T_DISC, S_T_DISC_D }, { S_T_SAVES, S_T_SAVES_D }, { S_T_SPACE, S_T_SPACE_D }, { S_T_SEARCH, S_T_SEARCH_D } };
-static const uint32_t tl_cols[4][2] = {
+/* ---------------------------------------------------------------- hub (4 x 2 tiles) */
+static const int tl_items[TL_N][2] = { { S_T_DISC, S_T_DISC_D }, { S_T_SAVES, S_T_SAVES_D }, { S_T_SPACE, S_T_SPACE_D }, { S_T_SEARCH, S_T_SEARCH_D },
+                                       { S_T_DL, S_T_DL_D }, { S_T_UPD, S_T_UPD_D }, { S_T_NET, S_T_NET_D } };
+static const uint32_t tl_cols[TL_N][2] = {
     { RGBA8(64, 120, 255, 255), RGBA8(150, 70, 255, 255) }, { RGBA8(40, 200, 150, 255), RGBA8(40, 120, 200, 255) },
-    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) } };
+    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) },
+    { RGBA8(30, 190, 220, 255), RGBA8(60, 100, 230, 255) }, { RGBA8(240, 90, 160, 255), RGBA8(130, 60, 230, 255) },
+    { RGBA8(90, 200, 90, 255), RGBA8(30, 140, 160, 255) } };
 
 static void draw_tools_hub(void)
 {
     tl_title(T(S_TOOLS), NULL);
-    float cw = 400, ch = 150, gx = (SCR_W - 2 * cw - 24) / 2, gy = 96;
-    for (int i = 0; i < 4; i++) {
-        float x = gx + (i % 2) * (cw + 24), y = gy + (i / 2) * (ch + 24) + (1 - tl_anim) * 24;
+    const float m = 26, gap = 14, cw = (SCR_W - 2 * m - 3 * gap) / 4, ch = 168, gy = 80;
+    for (int i = 0; i < TL_N; i++) {
+        float x = m + (i % 4) * (cw + gap), y = gy + (i / 4) * (ch + gap) + (1 - tl_anim) * 24;
         int on = i == tl_sel;
         uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
-        if (on) gfx_glow(MXP(x + cw / 2), y + ch / 2, cw * 0.6f, WITH_ALPHA(ca, 90));
-        if (on) L_rrect_grad(x, y, cw, ch, 20, WITH_ALPHA(ca, 235), WITH_ALPHA(cb, 235));
-        else L_rrect(x, y, cw, ch, 20, C_PANEL);
-        L_border(x, y, cw, ch, 20, on ? 2 : 1, on ? RGBA8(255, 255, 255, 170 + (int)(sinf(gfx_frame() * 0.1f) * 60)) : C_EDGE);
-        /* icon disc */
-        float ix = MXP(x + 52), iy = y + 56;
-        gfx_circle(ix, iy, 26, on ? RGBA8(255, 255, 255, 60) : WITH_ALPHA(ca, 70));
-        gfx_circle(ix, iy, 16, on ? RGBA8(255, 255, 255, 90) : WITH_ALPHA(ca, 120));
-        gfx_circle(ix, iy, 5, on ? C_TEXT : ca);
-        L_text(x + 96, y + 34, T(tl_items[i][0]), 19, 1, C_TEXT, ALIGN_LEFT);
-        L_text_fit(x + 96, y + 66, cw - 112, T(tl_items[i][1]), 11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+        if (on) gfx_glow(MXP(x + cw / 2), y + ch / 2, cw * 0.7f, WITH_ALPHA(ca, 90));
+        if (on) L_rrect_grad(x, y, cw, ch, 18, WITH_ALPHA(ca, 235), WITH_ALPHA(cb, 235));
+        else L_rrect(x, y, cw, ch, 18, C_PANEL);
+        L_border(x, y, cw, ch, 18, on ? 2 : 1, on ? RGBA8(255, 255, 255, 170 + (int)(sinf(gfx_frame() * 0.1f) * 60)) : C_EDGE);
+        float ix = MXP(x + 36), iy = y + 38;
+        gfx_circle(ix, iy, 20, on ? RGBA8(255, 255, 255, 60) : WITH_ALPHA(ca, 70));
+        gfx_circle(ix, iy, 12, on ? RGBA8(255, 255, 255, 90) : WITH_ALPHA(ca, 120));
+        gfx_circle(ix, iy, 4, on ? C_TEXT : ca);
+        L_text_fit(x + 16, y + 74, cw - 28, T(tl_items[i][0]), 15, 1, C_TEXT, ALIGN_LEFT);
+        /* two-line description */
+        char d[200]; snprintf(d, sizeof(d), "%s", T(tl_items[i][1]));
+        L_text_fit(x + 16, y + 102, cw - 28, d, 10, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+    }
+    if (dl_active()) {
+        char m2[96]; snprintf(m2, sizeof(m2), "%s", T(S_DL_RUNNING));
+        L_text(SCR_W - 28, 30, m2, 11, 1, RGBA8(120, 220, 255, 255), ALIGN_RIGHT);
     }
 }
 
@@ -311,7 +320,8 @@ static void sv_run(void)
         path_join(dst, sizeof(dst), v->root, "PS3/SAVEDATA"); vfs_mkdir(dst);
     } else snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
     ops_ret_tools = 1;
-    if (ops_start(OP_COPY, srcs, n, dst)) open_modal(UI_PROGRESS_OPS); else ops_ret_tools = 0;
+    /* restore: staged + size-verified copy, the existing save is kept as a backup (avoids HEN freezes) */
+    if (ops_start(sv_tab ? OP_SAVE_RESTORE : OP_COPY, srcs, n, dst)) open_modal(UI_PROGRESS_OPS); else ops_ret_tools = 0;
 }
 
 static void handle_tools_saves(void)
@@ -459,6 +469,254 @@ static void handle_tools_search(void)
     }
 }
 
+/* ---------------------------------------------------------------- downloads */
+static int dl_sel, dl_top;
+static char dl_url_buf[512];
+
+static void draw_tools_dl(void)
+{
+    tl_title(T(S_T_DL), T(S_DL_HINT));
+    int n = dl_count();
+    if (!n) { L_text_fit(SCR_W / 2, 220, SCR_W - 80, T(S_DL_EMPTY), 14, 0, C_DIM, ALIGN_CENTER); return; }
+    if (dl_sel >= n) dl_sel = n - 1;
+    int rows = 7;
+    if (dl_sel < dl_top) dl_top = dl_sel;
+    if (dl_sel >= dl_top + rows) dl_top = dl_sel - rows + 1;
+    for (int i = dl_top; i < n && i < dl_top + rows; i++) {
+        const dl_item_t *d = dl_get(i);
+        float x = 28, y = 70 + (i - dl_top) * 52, w = SCR_W - 56;
+        int on = i == dl_sel;
+        if (on) L_grad_pill(x, y, w, 46, 12, WITH_ALPHA(C_ACC1, 200), WITH_ALPHA(C_ACC2, 200));
+        else L_rrect(x, y, w, 46, 12, RGBA8(255, 255, 255, 10));
+        L_text_fit(x + 16, y + 6, w - 230, d->name, 13, 1, C_TEXT, ALIGN_LEFT);
+        static const int stn[] = { S_DL_QUEUED, S_DL_DOWNLOADING, S_DL_PAUSED, S_DL_DONE, S_DL_FAILED };
+        char st[200], a1[32], a2[32], sp[32];
+        fmt_size(d->done, a1, sizeof(a1)); fmt_size(d->total, a2, sizeof(a2)); fmt_size(d->speed, sp, sizeof(sp));
+        if (d->state == DL_RUNNING) snprintf(st, sizeof(st), "%s  %s / %s  \xC2\xB7  %s/s", T(stn[d->state]), a1, d->total ? a2 : "?", sp);
+        else if (d->state == DL_FAILED) snprintf(st, sizeof(st), "%s: %s", T(stn[d->state]), d->err);
+        else snprintf(st, sizeof(st), "%s  %s%s%s", T(stn[d->state]), a1, d->total ? " / " : "", d->total ? a2 : "");
+        L_text_fit(x + 16, y + 26, w - 230, st, 10, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+        float pct = d->total ? (float)d->done / d->total : 0; if (pct > 1) pct = 1;
+        L_rrect(x + w - 200, y + 19, 180, 8, 4, RGBA8(255, 255, 255, 25));
+        if (pct * 180 > 8) L_rrect(x + w - 200, y + 19, pct * 180, 8, 4, d->state == DL_DONE ? C_OKC : RGBA8(120, 200, 255, 255));
+    }
+}
+
+static void handle_tools_dl(void)
+{
+    if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
+    if (in_pressed & B_SQU) { osk_purpose = 14; if (osk_open(T(S_DL_URL), "https://")) ui = UI_OSK; return; }
+    int n = dl_count();
+    if (!n) return;
+    if (in_active & B_UP) dl_sel = (dl_sel + n - 1) % n;
+    if (in_active & B_DOWN) dl_sel = (dl_sel + 1) % n;
+    const dl_item_t *d = dl_get(dl_sel);
+    if (in_pressed & B_TRI) { dl_remove(dl_sel); return; }
+    if (in_pressed & B_OK) {
+        if (d->state == DL_RUNNING || d->state == DL_QUEUED) dl_pause(dl_sel);
+        else if (d->state == DL_PAUSED || d->state == DL_FAILED) dl_resume(dl_sel);
+        else if (d->state == DL_DONE) {
+            size_t l = strlen(d->path);
+            if (l > 4 && !strcasecmp(d->path + l - 4, ".pkg")) install_single(d->path);
+            else { char dir[1024], child[256]; snprintf(dir, sizeof(dir), "%s", d->path); if (path_parent(dir, child, sizeof(child))) { ui = UI_BROWSE; open_path_anywhere(dir, child); } }
+        }
+    }
+}
+
+/* ---------------------------------------------------------------- official game updates */
+typedef struct { char id[12]; char title[96]; char ver[12]; } upgame_t;
+static upgame_t *ug; static int ug_n, ug_sel, ug_top, up_view, up_sel;
+
+static int is_title_id(const char *s)
+{
+    if (strlen(s) != 9) return 0;
+    for (int i = 0; i < 4; i++) if (s[i] < 'A' || s[i] > 'Z') return 0;
+    for (int i = 4; i < 9; i++) if (s[i] < '0' || s[i] > '9') return 0;
+    return 1;
+}
+
+static void up_scan(void)
+{
+    up_view = 0; ug_sel = ug_top = 0; ug_n = 0;
+    if (!ug) ug = calloc(400, sizeof(upgame_t));
+    if (!ug) return;
+    vfs_entry_t *e = malloc(sizeof(vfs_entry_t) * 1024);
+    if (!e) return;
+    int n = vfs_list("/dev_hdd0/game", e, 1024);
+    for (int i = 0; i < n && ug_n < 400; i++) {
+        if (!e[i].is_dir || !is_title_id(e[i].name)) continue;
+        char sfo[300]; snprintf(sfo, sizeof(sfo), "/dev_hdd0/game/%s/PARAM.SFO", e[i].name);
+        int nf = sfo_load(sfo, sfo_fields, SFO_MAX_FIELDS);
+        if (nf <= 0) continue;
+        char cat[8] = "", title[96] = "", ver[12] = "";
+        for (int k = 0; k < nf; k++) {
+            if (!strcmp(sfo_fields[k].key, "CATEGORY")) snprintf(cat, sizeof(cat), "%s", sfo_fields[k].value);
+            if (!strcmp(sfo_fields[k].key, "TITLE")) snprintf(title, sizeof(title), "%s", sfo_fields[k].value);
+            if (!strcmp(sfo_fields[k].key, "APP_VER")) snprintf(ver, sizeof(ver), "%s", sfo_fields[k].value);
+        }
+        if (strcmp(cat, "HG") && strcmp(cat, "GD") && strcmp(cat, "DG")) continue;
+        upgame_t *g = &ug[ug_n++];
+        snprintf(g->id, sizeof(g->id), "%s", e[i].name);
+        snprintf(g->title, sizeof(g->title), "%s", title);
+        for (char *p = g->title; *p; p++) if (*p == '\n') *p = ' ';
+        snprintf(g->ver, sizeof(g->ver), "%s", ver);
+    }
+    free(e);
+}
+
+static const char *up_installed_ver(const char *id)
+{
+    for (int i = 0; i < ug_n; i++) if (!strcmp(ug[i].id, id)) return ug[i].ver;
+    return "";
+}
+static char up_id[12];
+
+static void draw_tools_upd(void)
+{
+    if (!up_view) {
+        tl_title(T(S_T_UPD), T(S_UPD_HINT));
+        if (!ug_n) { L_text_fit(SCR_W / 2, 220, SCR_W - 80, T(S_UPD_NOGAMES), 14, 0, C_DIM, ALIGN_CENTER); return; }
+        int rows = 8;
+        if (ug_sel < ug_top) ug_top = ug_sel;
+        if (ug_sel >= ug_top + rows) ug_top = ug_sel - rows + 1;
+        for (int i = ug_top; i < ug_n && i < ug_top + rows; i++) {
+            float y = 70 + (i - ug_top) * 44;
+            int on = i == ug_sel;
+            if (on) L_grad_pill(28, y, SCR_W - 56, 40, 12, WITH_ALPHA(C_ACC1, 200), WITH_ALPHA(C_ACC2, 200));
+            else L_rrect(28, y, SCR_W - 56, 40, 12, RGBA8(255, 255, 255, 10));
+            L_text_fit(44, y + 5, SCR_W - 260, ug[i].title[0] ? ug[i].title : ug[i].id, 13, 1, C_TEXT, ALIGN_LEFT);
+            L_text(44, y + 22, ug[i].id, 10, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+            char v[40]; snprintf(v, sizeof(v), "v%s", ug[i].ver[0] ? ug[i].ver : "?");
+            L_text(SCR_W - 44, y + 12, v, 12, 1, C_TEXT, ALIGN_RIGHT);
+        }
+        return;
+    }
+    char sub[200]; snprintf(sub, sizeof(sub), "%s  \xC2\xB7  %s %s", up_id, T(S_UPD_INSTALLED), up_installed_ver(up_id)[0] ? up_installed_ver(up_id) : "-");
+    tl_title(upd_title()[0] ? upd_title() : T(S_T_UPD), sub);
+    int st = upd_state();
+    if (st == UPD_BUSY) { tl_spinner(SCR_W / 2, 200); return; }
+    if (st == UPD_NONE) { L_text_fit(SCR_W / 2, 220, SCR_W - 80, T(S_UPD_NONE), 14, 1, C_TEXT, ALIGN_CENTER); return; }
+    if (st == UPD_ERROR) { L_text_fit(SCR_W / 2, 210, SCR_W - 80, T(S_UPD_ERR), 14, 1, C_TEXT, ALIGN_CENTER); L_text_fit(SCR_W / 2, 236, SCR_W - 80, upd_error(), 11, 0, C_DIM, ALIGN_CENTER); return; }
+    int n = upd_count();
+    if (up_sel >= n) up_sel = n - 1;
+    float total = 0;
+    for (int i = 0; i < n && i < 8; i++) {
+        const upd_pkg_t *u = upd_get(i);
+        float y = 70 + i * 44;
+        int on = i == up_sel;
+        if (on) L_grad_pill(28, y, SCR_W - 56, 40, 12, WITH_ALPHA(C_ACC1, 200), WITH_ALPHA(C_ACC2, 200));
+        else L_rrect(28, y, SCR_W - 56, 40, 12, RGBA8(255, 255, 255, 10));
+        char t[64], sz[32]; snprintf(t, sizeof(t), "%s %s", T(S_VERSION), u->ver); fmt_size(u->size, sz, sizeof(sz));
+        L_text(44, y + 5, t, 14, 1, C_TEXT, ALIGN_LEFT);
+        char r[96]; snprintf(r, sizeof(r), "%s  \xC2\xB7  FW %s", sz, u->sysver);
+        L_text(44, y + 23, r, 10, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+        total += u->size;
+        if (strcmp(u->ver, up_installed_ver(up_id)) <= 0 && up_installed_ver(up_id)[0]) L_text(SCR_W - 44, y + 12, T(S_UPD_HAVE), 11, 1, C_OKC, ALIGN_RIGHT);
+    }
+    (void)total;
+}
+
+static void handle_tools_upd(void)
+{
+    if (up_view) {
+        if (in_pressed & B_CANCEL) { up_view = 0; return; }
+        int n = upd_state() == UPD_DONE ? upd_count() : 0;
+        if (!n) return;
+        if (in_active & B_UP) up_sel = (up_sel + n - 1) % n;
+        if (in_active & B_DOWN) up_sel = (up_sel + 1) % n;
+        if (in_pressed & B_OK) {
+            const upd_pkg_t *u = upd_get(up_sel);
+            if (dl_add(u->url, PACKAGES_DIR) >= 0) show_toast(T(S_DL_ADDED)); else show_toast(T(S_DL_FULL));
+        }
+        return;
+    }
+    if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
+    if (in_pressed & B_SQU) { osk_purpose = 15; if (osk_open(T(S_UPD_BYID), "BLUS")) ui = UI_OSK; return; }
+    if (!ug_n) return;
+    if (in_active & B_UP) ug_sel = (ug_sel + ug_n - 1) % ug_n;
+    if (in_active & B_DOWN) ug_sel = (ug_sel + 1) % ug_n;
+    if (in_pressed & B_OK) { snprintf(up_id, sizeof(up_id), "%s", ug[ug_sel].id); up_sel = 0; up_view = 1; upd_check(up_id); }
+}
+
+static void up_check_id(const char *id)
+{
+    char t[16]; int o = 0;
+    for (const char *p = id; *p && o < 9; p++) { char c = *p; if (c >= 'a' && c <= 'z') c -= 32; if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) t[o++] = c; }
+    t[o] = 0;
+    if (!is_title_id(t)) { show_toast(T(S_UPD_BADID)); return; }
+    snprintf(up_id, sizeof(up_id), "%s", t); up_sel = 0; up_view = 1; upd_check(up_id);
+}
+
+/* ---------------------------------------------------------------- network shares (SMB) */
+static int nt_sel, nt_step;
+static smb_share_t nt_new;
+
+static void draw_tools_net(void)
+{
+    tl_title(T(S_T_NET), smb_available() ? T(S_NET_HINT) : T(S_NET_UNAVAILABLE));
+    int n = smb_share_count();
+    if (!n) { L_text_fit(SCR_W / 2, 220, SCR_W - 80, T(S_NET_EMPTY), 14, 0, C_DIM, ALIGN_CENTER); return; }
+    if (nt_sel >= n) nt_sel = n - 1;
+    for (int i = 0; i < n; i++) {
+        const smb_share_t *sh = smb_share(i);
+        float y = 70 + i * 48;
+        int on = i == nt_sel;
+        if (on) L_grad_pill(28, y, SCR_W - 56, 44, 12, WITH_ALPHA(C_ACC1, 200), WITH_ALPHA(C_ACC2, 200));
+        else L_rrect(28, y, SCR_W - 56, 44, 12, RGBA8(255, 255, 255, 10));
+        L_text_fit(44, y + 6, SCR_W - 120, sh->label[0] ? sh->label : sh->share, 14, 1, C_TEXT, ALIGN_LEFT);
+        char p[200]; snprintf(p, sizeof(p), "smb://%s/%s   \xC2\xB7   %s", sh->server, sh->share, sh->user[0] ? sh->user : "guest");
+        L_text_fit(44, y + 25, SCR_W - 120, p, 10, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
+    }
+}
+
+static void nt_next_step(const char *val)
+{
+    /* add-share wizard: server -> share -> user -> password */
+    switch (nt_step) {
+    case 0: snprintf(nt_new.server, sizeof(nt_new.server), "%s", val); break;
+    case 1: snprintf(nt_new.share, sizeof(nt_new.share), "%s", val); snprintf(nt_new.label, sizeof(nt_new.label), "%s", val); break;
+    case 2: snprintf(nt_new.user, sizeof(nt_new.user), "%s", val); break;
+    case 3: snprintf(nt_new.pass, sizeof(nt_new.pass), "%s", val); break;
+    }
+    nt_step++;
+    if (nt_step < 4) {
+        static const int q[4] = { S_NET_SERVER, S_NET_SHARE, S_NET_USER, S_NET_PASS };
+        osk_purpose = 16;
+        if (osk_open(T(q[nt_step]), "")) ui = UI_OSK;
+        return;
+    }
+    if (!nt_new.server[0] || !nt_new.share[0]) { show_toast(T(S_NET_BAD)); return; }
+    smb_share_add(&nt_new);
+    smb_shares_save(SMB_FILE);
+    show_toast(T(S_NET_ADDED));
+    ui = UI_SCANNING;                 /* rescan: the share appears in the drive list */
+}
+
+static void handle_tools_net(void)
+{
+    if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
+    if (in_pressed & B_SQU) {
+        if (!smb_available()) { show_toast(T(S_NET_UNAVAILABLE)); return; }
+        memset(&nt_new, 0, sizeof(nt_new)); nt_step = 0;
+        osk_purpose = 16;
+        if (osk_open(T(S_NET_SERVER), "192.168.1.")) ui = UI_OSK;
+        return;
+    }
+    int n = smb_share_count();
+    if (!n) return;
+    if (in_active & B_UP) nt_sel = (nt_sel + n - 1) % n;
+    if (in_active & B_DOWN) nt_sel = (nt_sel + 1) % n;
+    if (in_pressed & B_TRI) { smb_share_remove(nt_sel); smb_shares_save(SMB_FILE); smb_disconnect_all(); ui = UI_SCANNING; return; }
+    if (in_pressed & B_OK) {
+        const smb_share_t *sh = smb_share(nt_sel);
+        char root[200]; snprintf(root, sizeof(root), "smb://%s/%s/", sh->server, sh->share);
+        int d = 0; uint64_t sz;
+        if (vfs_stat(root, &d, &sz) != 0) { char m[220]; snprintf(m, sizeof(m), "%s: %s", T(S_NET_FAIL), smb_last_error()); show_toast(m); return; }
+        ui = UI_BROWSE;
+        open_path_anywhere(root, NULL);
+    }
+}
+
 /* ---------------------------------------------------------------- dispatch */
 static void tools_open(void) { tl_scr = TS_HUB; tl_anim = 0; tl_scan_dests(); ui = UI_TOOLS; }
 
@@ -471,6 +729,9 @@ static void draw_tools(void)
         case TS_SAVES: draw_tools_saves(); break;
         case TS_SPACE: draw_tools_space(); break;
         case TS_SEARCH: draw_tools_search(); break;
+        case TS_DL: draw_tools_dl(); break;
+        case TS_UPD: draw_tools_upd(); break;
+        case TS_NET: draw_tools_net(); break;
     }
 }
 
@@ -483,6 +744,9 @@ static void draw_tools_hints(void)
         case TS_SAVES: h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP }; h[n++] = (hint_t){ BTN_SQUARE, S_MARK }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
         case TS_SPACE: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_TRIANGLE, S_GO_TO }; break;
         case TS_SEARCH: h[n++] = (hint_t){ ok_icon, S_GO_TO }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; break;
+        case TS_DL: h[n++] = (hint_t){ ok_icon, S_DL_ACT }; h[n++] = (hint_t){ BTN_SQUARE, S_DL_ADD }; h[n++] = (hint_t){ BTN_TRIANGLE, S_DL_REMOVE }; break;
+        case TS_UPD: if (up_view) { h[n++] = (hint_t){ ok_icon, S_DOWNLOAD }; } else { h[n++] = (hint_t){ ok_icon, S_UPD_CHECK }; h[n++] = (hint_t){ BTN_SQUARE, S_UPD_BYID }; } break;
+        case TS_NET: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_SQUARE, S_NET_ADD }; h[n++] = (hint_t){ BTN_TRIANGLE, S_DELETE_ACT }; break;
     }
     h[n++] = (hint_t){ cancel_icon, S_BACK };
     draw_hints(h, n);
@@ -494,15 +758,19 @@ static void handle_tools(void)
     case TS_HUB: {
         uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
         if (in_pressed & B_CANCEL) { ui = UI_BROWSE; return; }
-        if (in_active & R) tl_sel = (tl_sel + 1) % 4;
-        if (in_active & L) tl_sel = (tl_sel + 3) % 4;
-        if (in_active & (B_UP | B_DOWN)) tl_sel = (tl_sel + 2) % 4;
+        if ((in_active & R) && tl_sel % 4 < 3 && tl_sel + 1 < TL_N) tl_sel++;
+        if ((in_active & L) && tl_sel % 4 > 0) tl_sel--;
+        if ((in_active & B_DOWN) && tl_sel < 4) { tl_sel += 4; if (tl_sel >= TL_N) tl_sel = TL_N - 1; }
+        if ((in_active & B_UP) && tl_sel >= 4) tl_sel -= 4;
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
             else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_scan_usb(); sv_scan(); }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
-            else { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
+            else if (tl_sel == 3) { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
+            else if (tl_sel == 4) { tl_scr = TS_DL; dl_sel = 0; }
+            else if (tl_sel == 5) { tl_scr = TS_UPD; up_scan(); }
+            else { tl_scr = TS_NET; nt_sel = 0; }
         }
         break;
     }
@@ -510,6 +778,9 @@ static void handle_tools(void)
     case TS_SAVES: handle_tools_saves(); break;
     case TS_SPACE: handle_tools_space(); break;
     case TS_SEARCH: handle_tools_search(); break;
+    case TS_DL: handle_tools_dl(); break;
+    case TS_UPD: handle_tools_upd(); break;
+    case TS_NET: handle_tools_net(); break;
     }
 }
 

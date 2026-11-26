@@ -4,15 +4,16 @@
 /* Unified file access across PS3 file systems:
  *   native  : /dev_hdd0, /dev_usbNNN (FAT32), /dev_flash, /dev_bdvd ...   (lv2 sysFs)
  *   NTFS/ext: ntfs0:/ ext0:/ ...  (libntfs_ext)
- *   exFAT   : 0:/ .. 7:/          (FatFs, also reads FAT32 on raw ports)  */
+ *   exFAT   : 0:/ .. 7:/          (FatFs, also reads FAT32 on raw ports)
+ *   SMB     : smb://server/share/  (libsmb2 network shares)  */
 
-enum { VFS_NATIVE = 0, VFS_NTFS = 1, VFS_FAT = 2 };
+enum { VFS_NATIVE = 0, VFS_NTFS = 1, VFS_FAT = 2, VFS_SMB = 3 };
 
 typedef struct {
     char root[64];       /* path to open the volume */
     char label[64];      /* display label */
     char fs_name[12];    /* "FAT32", "NTFS", "exFAT", "ext4", "PS3" ... */
-    int  kind;           /* 0 hdd, 1 usb, 2 flash/system, 3 disc, 4 packages shortcut */
+    int  kind;           /* 0 hdd, 1 usb, 2 flash/system, 3 disc, 4 packages shortcut, 5 network */
     int  fs;             /* FS_* backend */
     int  port;           /* usb port, -1 otherwise */
     int  writable;

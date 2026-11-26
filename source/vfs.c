@@ -14,6 +14,7 @@
 #include "fflib.h"
 #include "storage.h"
 #include "vfs.h"
+#include "vfs_smb.h"
 
 #define USB_MASS_STORAGE_1(n) (0x10300000000000AULL + (n))
 #define USB_MASS_STORAGE_2(n) (0x10300000000001FULL + ((n) - 6))
@@ -25,6 +26,7 @@ struct vfs_file {
     int be;
     s32 fd;      /* native / ntfs */
     FIL fil;     /* exFAT */
+    void *smb;   /* network share */
 };
 
 static ntfs_md *ntfs_mounts;
@@ -36,6 +38,7 @@ static int ff_inited;
 int vfs_backend(const char *p)
 {
     if (!p || !p[0]) return VFS_NATIVE;
+    if (!strncmp(p, "smb://", 6)) return VFS_SMB;
     if (p[0] == '/') return VFS_NATIVE;
     if (p[0] >= '0' && p[0] <= '9' && p[1] == ':') return VFS_FAT;
     return VFS_NTFS;
@@ -142,6 +145,12 @@ int vfs_scan(volume_t *out, int max)
     if (native_is_dir("/dev_flash2")) add_vol(out, &n, max, "/dev_flash2", "dev_flash2", "FLASH", 2, VFS_NATIVE, -1, 1);
     if (native_is_dir("/dev_flash3")) add_vol(out, &n, max, "/dev_flash3", "dev_flash3", "FLASH", 2, VFS_NATIVE, -1, 0);
     if (native_is_dir("/dev_blind")) add_vol(out, &n, max, "/dev_blind", "dev_blind", "FLASH", 2, VFS_NATIVE, -1, 1);
+    for (int i = 0; i < smb_share_count(); i++) {
+        const smb_share_t *sh = smb_share(i);
+        char root[160];
+        snprintf(root, sizeof(root), "smb://%s/%s/", sh->server, sh->share);
+        if (strlen(root) < 64) add_vol(out, &n, max, root, sh->label[0] ? sh->label : sh->share, "SMB", 5, VFS_SMB, -1, 1);
+    }
     return n;
 }
 
@@ -151,6 +160,7 @@ int vfs_list(const char *path, vfs_entry_t *out, int max)
 {
     int n = 0;
     int be = vfs_backend(path);
+    if (be == VFS_SMB) return smbfs_list(path, out, max);
     if (be == VFS_NATIVE) {
         DIR *d = opendir(path);
         if (!d) return -1;
@@ -199,6 +209,7 @@ int vfs_list(const char *path, vfs_entry_t *out, int max)
 int vfs_stat(const char *path, int *is_dir, uint64_t *size)
 {
     int be = vfs_backend(path);
+    if (be == VFS_SMB) return smbfs_stat(path, is_dir, size);
     if (be == VFS_NATIVE) {
         struct stat sb;
         if (stat(path, &sb) != 0) return -1;
@@ -229,6 +240,7 @@ int vfs_mkdir(const char *path)
     switch (vfs_backend(path)) {
     case VFS_NATIVE: return mkdir(path, 0777) == 0 || native_is_dir(path) ? 0 : -1;
     case VFS_NTFS:   return ps3ntfs_mkdir(path, 0777) == 0 ? 0 : -1;
+    case VFS_SMB:    return smbfs_mkdir(path);
     default:        { FRESULT r = f_mkdir(path); return (r == FR_OK || r == FR_EXIST) ? 0 : -1; }
     }
 }
@@ -238,6 +250,7 @@ int vfs_unlink(const char *path)
     switch (vfs_backend(path)) {
     case VFS_NATIVE: return sysFsUnlink(path) == 0 ? 0 : -1;
     case VFS_NTFS:   return ps3ntfs_unlink(path) == 0 ? 0 : -1;
+    case VFS_SMB:    return smbfs_unlink(path);
     default:        return f_unlink(path) == FR_OK ? 0 : -1;
     }
 }
@@ -246,6 +259,7 @@ int vfs_rmdir(const char *path)
 {
     switch (vfs_backend(path)) {
     case VFS_NATIVE: return sysFsRmdir(path) == 0 ? 0 : -1;
+    case VFS_SMB:    return smbfs_rmdir(path);
     case VFS_NTFS:   return ps3ntfs_unlink(path) == 0 ? 0 : -1;
     default:        return f_unlink(path) == FR_OK ? 0 : -1;
     }
@@ -258,6 +272,7 @@ int vfs_rename(const char *from, const char *to)
     switch (be) {
     case VFS_NATIVE: return rename(from, to) == 0 ? 0 : -1;
     case VFS_NTFS:   return ps3ntfs_rename(from, to) == 0 ? 0 : -1;
+    case VFS_SMB:    return smbfs_rename(from, to);
     default: {
         /* FatFs: destination must not carry the drive prefix */
         const char *t = (to[1] == ':') ? to + 2 : to;
@@ -269,6 +284,7 @@ int vfs_rename(const char *from, const char *to)
 uint64_t vfs_free_space(const char *path)
 {
     int be = vfs_backend(path);
+    if (be == VFS_SMB) return smbfs_free(path);
     if (be == VFS_NATIVE) {
         char dev[32] = { 0 };
         const char *s = strchr(path + 1, '/');
@@ -303,7 +319,8 @@ static vfs_file_t *open_any(const char *path, int write)
     if (!f) return NULL;
     f->be = vfs_backend(path);
     int ok = 0;
-    if (f->be == VFS_NATIVE) {
+    if (f->be == VFS_SMB) { f->smb = smbfs_open(path, write); ok = f->smb != NULL; }
+    else if (f->be == VFS_NATIVE) {
         s32 flags = write == 1 ? (SYS_O_WRONLY | SYS_O_CREAT | SYS_O_TRUNC) : write == 2 ? SYS_O_RDWR : SYS_O_RDONLY;
         ok = sysFsOpen(path, flags, &f->fd, NULL, 0) == 0;
         if (ok && write == 1) sysFsChmod(path, 0666);
@@ -323,6 +340,7 @@ vfs_file_t *vfs_open_rw(const char *path)    { return open_any(path, 2); }
 
 uint64_t vfs_size(vfs_file_t *f)
 {
+    if (f->be == VFS_SMB) return smbfs_size(f->smb);
     if (f->be == VFS_NATIVE) { sysFSStat sb; return sysFsFstat(f->fd, &sb) == 0 ? sb.st_size : 0; }
     if (f->be == VFS_NTFS) { struct stat sb; return ps3ntfs_fstat(f->fd, &sb) == 0 ? (uint64_t)sb.st_size : 0; }
     return (uint64_t)f_size(&f->fil);
@@ -339,6 +357,7 @@ int vfs_usb_device_mask(void)
 
 int64_t vfs_read(vfs_file_t *f, void *buf, uint32_t len)
 {
+    if (f->be == VFS_SMB) return smbfs_read(f->smb, buf, len);
     if (f->be == VFS_NATIVE) { u64 rd = 0; if (sysFsRead(f->fd, buf, len, &rd) != 0) return -1; return (int64_t)rd; }
     if (f->be == VFS_NTFS) { int r = ps3ntfs_read(f->fd, (char *)buf, len); return r; }
     UINT br = 0; if (f_read(&f->fil, buf, len, &br) != FR_OK) return -1; return br;
@@ -346,6 +365,7 @@ int64_t vfs_read(vfs_file_t *f, void *buf, uint32_t len)
 
 int64_t vfs_write(vfs_file_t *f, const void *buf, uint32_t len)
 {
+    if (f->be == VFS_SMB) return smbfs_write(f->smb, buf, len);
     if (f->be == VFS_NATIVE) { u64 wr = 0; if (sysFsWrite(f->fd, buf, len, &wr) != 0) return -1; return (int64_t)wr; }
     if (f->be == VFS_NTFS) { int r = ps3ntfs_write(f->fd, (const char *)buf, len); return r; }
     UINT bw = 0; if (f_write(&f->fil, buf, len, &bw) != FR_OK) return -1; return bw;
@@ -353,6 +373,7 @@ int64_t vfs_write(vfs_file_t *f, const void *buf, uint32_t len)
 
 int vfs_seek(vfs_file_t *f, uint64_t off)
 {
+    if (f->be == VFS_SMB) return smbfs_seek(f->smb, off);
     if (f->be == VFS_NATIVE) { u64 pos; return sysFsLseek(f->fd, (s64)off, SEEK_SET, &pos) == 0 ? 0 : -1; }
     if (f->be == VFS_NTFS) return ps3ntfs_seek64(f->fd, (s64)off, SEEK_SET) >= 0 ? 0 : -1;
     return f_lseek(&f->fil, off) == FR_OK ? 0 : -1;
@@ -361,7 +382,8 @@ int vfs_seek(vfs_file_t *f, uint64_t off)
 void vfs_close(vfs_file_t *f)
 {
     if (!f) return;
-    if (f->be == VFS_NATIVE) sysFsClose(f->fd);
+    if (f->be == VFS_SMB) smbfs_close(f->smb);
+    else if (f->be == VFS_NATIVE) sysFsClose(f->fd);
     else if (f->be == VFS_NTFS) ps3ntfs_close(f->fd);
     else f_close(&f->fil);
     free(f);

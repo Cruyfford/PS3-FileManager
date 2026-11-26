@@ -27,7 +27,13 @@ LIBS		:=	$(PROJECT_ROOT)/third_party/fs/lib/libntfs_ext.a $(PROJECT_ROOT)/third_
 				-lya2d -lfont3d -ltiny3d -lfreetype -lz -lpolarssl -lsimdmath -lgcm_sys -lio -lsysutil -lrt -llv2 \
 				-lpngdec -ljpgdec -lvdec -lsysmodule -lsysfs -laudio -lnetctl -lnet -lstdc++ -lm
 
-CFLAGS		=	-O2 -Wall -mcpu=cell -std=gnu99 $(MACHDEP) $(INCLUDE)
+# SMB network shares: only when libsmb2 was built into portlibs (CI step may skip it)
+ifneq ($(wildcard $(PORTLIBS)/lib/libsmb2.a),)
+SMBDEF		:=	-DHAVE_SMB2
+LIBS		:=	-lsmb2 $(LIBS)
+endif
+
+CFLAGS		=	-O2 -Wall -mcpu=cell -std=gnu99 $(MACHDEP) $(SMBDEF) -DHAVE_XDELTA $(INCLUDE)
 CXXFLAGS	=	$(CFLAGS)
 LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 

@@ -37,7 +37,14 @@
 #include "disc.h"
 #include "tools.h"
 #include "subdl.h"
+#include "tim.h"
+#include "pngw.h"
+#include "patcher.h"
 #include "hubapi.h"
+#include "vfs_smb.h"
+#include "dlmgr.h"
+#include "updates.h"
+#define SMB_FILE APP_DIR "/smb_shares.txt"
 #define SUBKEY_FILE APP_DIR "/subdl_key.txt"
 #define SYS_WEBMAN 100
 #define SYS_MOVIAN 101
@@ -66,7 +73,9 @@ extern const uint32_t ICONFILE_png_size;
 #define B_CRO    0x00000040
 #define B_SQU    0x00000080
 
-static uint32_t in_pressed, in_active, prev_down;
+static uint32_t in_pressed, in_active, prev_down, in_released;
+static int stick_combo;
+static char last_shot[256];     /* L3+R3 used as a screenshot combo: swallow their single actions */
 static int hold_frames;
 static uint32_t B_OK = B_CRO, B_CANCEL = B_CIR;
 static int ok_icon = BTN_CROSS, cancel_icon = BTN_CIRCLE;
@@ -81,6 +90,7 @@ static void read_input(void)
     if (ya2d_paddata[0].ANA_L_H < 0x30) d |= B_LEFT;
     if (ya2d_paddata[0].ANA_L_H > 0xD0) d |= B_RIGHT;
     in_pressed = d & ~prev_down;
+    in_released = prev_down & ~d;
     in_active = in_pressed;
     if (d && d == prev_down) {
         hold_frames++;
@@ -189,6 +199,17 @@ static void path_join(char *out, int n, const char *dir, const char *name)
 /* strips the last component; keeps "ntfs0:/" and "0:/" roots intact */
 static int path_parent(char *p, char *child, int cn)
 {
+    if (!strncmp(p, "smb://", 6)) {          /* smb://server/share/ is the root */
+        size_t l = strlen(p);
+        if (l && p[l - 1] == '/') p[--l] = 0;
+        char *s = strrchr(p, '/');
+        int depth = 0; for (const char *q = p + 6; *q; q++) depth += *q == '/';
+        if (!s || depth < 2) { if (depth == 1) strcat(p, "/"); return 0; }
+        if (child) snprintf(child, cn, "%s", s + 1);
+        *s = 0;
+        if (depth == 2) strcat(p, "/");
+        return 1;
+    }
     size_t l = strlen(p);
     if (l > 1 && p[l - 1] == '/' && p[l - 2] != ':') p[--l] = 0;
     char *s = strrchr(p, '/');
@@ -215,7 +236,7 @@ static int file_type(const char *name, int is_dir)
     const char *e = ext_of(name);
     static const struct { const char *ext; int t; } map[] = {
         {"pkg",FT_PKG},{"p3t",FT_THEME},{"iso",FT_DISC},{"bin",FT_DISC},{"img",FT_DISC},{"cue",FT_DISC},{"mdf",FT_DISC},{"vob",FT_VIDEO},
-        {"png",FT_IMAGE},{"jpg",FT_IMAGE},{"jpeg",FT_IMAGE},{"bmp",FT_IMAGE},{"gif",FT_IMAGE},{"gtf",FT_IMAGE},{"dds",FT_IMAGE},
+        {"png",FT_IMAGE},{"jpg",FT_IMAGE},{"jpeg",FT_IMAGE},{"bmp",FT_IMAGE},{"gif",FT_IMAGE},{"gtf",FT_IMAGE},{"dds",FT_IMAGE},{"tim",FT_IMAGE},
         {"mp4",FT_VIDEO},{"mkv",FT_VIDEO},{"avi",FT_VIDEO},{"m2ts",FT_VIDEO},{"mts",FT_VIDEO},{"pam",FT_VIDEO},{"wmv",FT_VIDEO},
         {"webm",FT_VIDEO},{"mov",FT_VIDEO},{"m4v",FT_VIDEO},{"3gp",FT_VIDEO},{"divx",FT_VIDEO},{"xvid",FT_VIDEO},{"ts",FT_VIDEO},{"tp",FT_VIDEO},{"trp",FT_VIDEO},{"mpg",FT_VIDEO},{"mpeg",FT_VIDEO},{"m2v",FT_VIDEO},{"flv",FT_VIDEO},
         {"srt",FT_TEXT},{"ass",FT_TEXT},{"ssa",FT_TEXT},{"vtt",FT_TEXT},
@@ -268,7 +289,7 @@ static int usb_mask(void)
 #define MAX_ENTRIES 3000
 typedef struct {
     char name[256];
-    int is_dir, type, marked, parsed, cover_wait;
+    int is_dir, type, marked, parsed, cover_wait, mark_seq;
     uint64_t size;
     pkg_info_t info;
     texture_t icon;
@@ -281,6 +302,13 @@ static int dir_gen;
 static float sel_anim, scroll_anim;
 static char cwd[1024];
 static int focus_list = 1;
+static int mark_ctr;
+static float list_x = 240, list_w = 584;     /* browser list geometry (dual pane splits it) */
+static int dual_on, pane_act;
+static int aud_bg, pl_n;
+static int fav_n;
+static int marked_files(int *idx, int max);
+static int patch_pair(int *patch, int *target);
 
 static int ent_cmp(const void *a, const void *b)
 {
@@ -494,7 +522,7 @@ static int clip_n, clip_op;   /* OP_COPY / OP_MOVE */
 
 /* =========================================================== UI state */
 enum { UI_BROWSE, UI_MENU, UI_CONFIRM_INSTALL, UI_CONFIRM_DELETE, UI_PROGRESS_INSTALL, UI_PROGRESS_OPS,
-       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO, UI_GAMES, UI_TOOLS };
+       UI_RESULT_INSTALL, UI_RESULT_OPS, UI_PROPS, UI_SETTINGS, UI_OSK, UI_SCANNING, UI_SFO, UI_IMAGE, UI_AUDIO, UI_TEXT, UI_HEX, UI_CONFIRM_LAUNCH, UI_LAUNCHING, UI_THEME, UI_VIDEO, UI_GAMES, UI_TOOLS, UI_FAVS };
 static int ui = UI_SCANNING, prev_ui = UI_BROWSE;
 static int confirm_sel, result_sel, set_sel, menu_sel;
 static float modal_anim, menu_anim;
@@ -507,6 +535,8 @@ static int sfo_count, sfo_sel;
 static char sfo_path[1400];
 static char ops_output[1400];
 static int thm_installing, play_after_copy;
+static int ops_ret_tools;
+static void draw_task_hints(float y, float h, int can_hide);
 static char movian_self[1400];
 static int launch_sys;
 static char launch_core[1400], launch_core_name[64], launch_src[1400];
@@ -755,13 +785,14 @@ static void draw_file_icon(float x, float y, float s, int type, const char *name
 
 static void draw_list(void)
 {
-    float x = 240, y = 78, w = 584, h = 366;
+    float x = list_x, y = 78, w = list_w, h = 366;
+    const float sidecol = dual_on ? 64 : 150;
     L_rrect(x, y, w, h, 16, C_PANEL);
     L_border(x, y, w, h, 16, 1, C_EDGE);
 
     /* breadcrumb + counter */
-    L_rrect(x + 12, y + 9, w - 150, 22, 11, RGBA8(0, 0, 0, 60));
-    L_text_fit(x + 24, y + 13, w - 176, cwd, 11, 0, C_TEXT, ALIGN_LEFT);
+    L_rrect(x + 12, y + 9, w - (dual_on ? 90 : 150), 22, 11, RGBA8(0, 0, 0, 60));
+    L_text_fit(x + 24, y + 13, w - (dual_on ? 116 : 176), cwd, 11, 0, C_TEXT, ALIGN_LEFT);
     char cnt[64];
     int mk = marked_count();
     if (mk) snprintf(cnt, sizeof(cnt), T(S_SELECTED), mk); else snprintf(cnt, sizeof(cnt), T(S_FILES), ent_count);
@@ -818,7 +849,7 @@ static void draw_list(void)
             } else draw_file_icon(ix, ry + 6, 30, e->type, e->name);
 
             const char *title = (e->type == FT_PKG && e->parsed == 1 && e->info.title[0]) ? e->info.title : e->name;
-            float tw = w - (tx - x) - 150;
+            float tw = w - (tx - x) - sidecol;
             L_text_fit(tx, ry + 6, tw, title, 14, 1, C_TEXT, ALIGN_LEFT);
 
             char line2[200];
@@ -984,8 +1015,8 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_UNISO, M_TOOLS, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_T_UNISO, S_TOOLS, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_HASH, M_COMPARE, M_PATCH, M_MKPATCH, M_TIM_PNG, M_TIMX, M_COPY, M_CUT, M_PASTE, M_COPY_OTHER, M_MOVE_OTHER, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_UNISO, M_FAV_ADD, M_FAVS, M_DUAL, M_NOWPLAY, M_TOOLS, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_HASH_MENU, S_COMPARE, S_APPLY_PATCH, S_MAKE_PATCH, S_TIM_PNG, S_TIM_EXTRACT, S_COPY, S_CUT, S_PASTE, S_COPY_OTHER, S_MOVE_OTHER, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_T_UNISO, S_FAV_ADD, S_FAVS, S_DUAL, S_NOW_PLAYING, S_TOOLS, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
 static int find_movian(void);
 static void ask_launch(int idx);
@@ -1032,6 +1063,7 @@ static int menu_enabled(int m)
         case M_COPY: return has;
         case M_CUT: case M_DELETE: return has && cur_writable();
         case M_PASTE: return clip_n > 0 && cur_writable();
+        case M_MOVE_OTHER: return has && cur_writable();
         case M_RENAME: return has && cur_writable() && marked_count() <= 1;
         case M_NEWDIR: return cur_writable();
         case M_SELALL: case M_PROPS: return has;
@@ -1054,6 +1086,14 @@ static void build_menu(void)
         if (m == M_EXTRACT_ARC && !(ent_count && archive_kind(ents[sel].name) != ARC_NONE)) continue;
         if ((m == M_OPEN_TEXT || m == M_OPEN_HEX) && !(ent_count && !ents[sel].is_dir)) continue;
         if (m == M_PASTE && !clip_n) continue;
+        if (m == M_HASH && !(ent_count && !marked_count() && !ents[sel].is_dir)) continue;
+        if ((m == M_COMPARE || m == M_MKPATCH) && marked_files(NULL, 3) != 2) continue;
+        if (m == M_PATCH && !patch_pair(NULL, NULL)) continue;
+        if (m == M_TIM_PNG && !(ent_count && !marked_count() && !ents[sel].is_dir && !strcasecmp(ext_of(ents[sel].name), "tim"))) continue;
+        if (m == M_TIMX && !(ent_count && !marked_count() && !ents[sel].is_dir && strcasecmp(ext_of(ents[sel].name), "tim") && ents[sel].size >= 20)) continue;
+        if ((m == M_COPY_OTHER || m == M_MOVE_OTHER) && !(dual_on && ent_count)) continue;
+        if (m == M_FAVS && !fav_n) continue;
+        if (m == M_NOWPLAY && !(aud_bg && pl_n)) continue;
         if (m == M_UNISO && !(ent_count && !marked_count() && !ents[sel].is_dir && iso_is_image(ents[sel].name))) continue;
         menu_items[menu_n++] = m;
     }
@@ -1136,21 +1176,28 @@ static void draw_progress_install(void)
     if (s->speed > 0) { char t[24]; fmt_time((uint32_t)((s->all_total - s->all_done) / s->speed), t, sizeof(t)); snprintf(eta, sizeof(eta), T(S_LEFT), t); }
     snprintf(line, sizeof(line), "%s / %s   \xC2\xB7   %s/s   \xC2\xB7   %s", done, tot, spd, eta);
     gfx_text(SCR_W / 2, y + 174, line, 12, 0, C_DIM, ALIGN_CENTER);
-    {
-        char sd[96]; snprintf(sd, sizeof(sd), "%s %s", T(S_SHUTDOWN_AFTER), shutdown_after ? "\xE2\x9C\x93" : "");
-        char qn[48] = ""; if (jq_n) snprintf(qn, sizeof(qn), T(S_QUEUE_N), jq_n);
-        float tw = 18 + 6 + gfx_text_width(T(S_CANCEL), 12, 0) + 24 + 18 + 6 + gfx_text_width(sd, 12, 0) + 24 + 18 + 6 + gfx_text_width(T(S_BG_HIDE), 12, 0);
-        float hx = SCR_W / 2 - tw / 2;
-        float bwi = gfx_button_icon(hx, y + h - 30, BTN_TRIANGLE, 18);
+    draw_task_hints(y, h, 0);
+}
+
+/* △ hide (ops only) · □ power off when done · ○ cancel */
+static void draw_task_hints(float y, float h, int can_hide)
+{
+    char sd[96]; snprintf(sd, sizeof(sd), "%s %s", T(S_SHUTDOWN_AFTER), shutdown_after ? "\xE2\x9C\x93" : "");
+    char qn[48] = ""; if (jq_n) snprintf(qn, sizeof(qn), T(S_QUEUE_N), jq_n);
+    float tw = 18 + 6 + gfx_text_width(T(S_CANCEL), 12, 0) + 24 + 18 + 6 + gfx_text_width(sd, 12, 0);
+    if (can_hide) tw += 24 + 18 + 6 + gfx_text_width(T(S_BG_HIDE), 12, 0);
+    float hx = SCR_W / 2 - tw / 2, bwi;
+    if (can_hide) {
+        bwi = gfx_button_icon(hx, y + h - 30, BTN_TRIANGLE, 18);
         gfx_text(hx + bwi + 6, y + h - 29, T(S_BG_HIDE), 12, 0, C_DIM, ALIGN_LEFT);
         hx += bwi + 6 + gfx_text_width(T(S_BG_HIDE), 12, 0) + 24;
-        bwi = gfx_button_icon(hx, y + h - 30, BTN_SQUARE, 18);
-        gfx_text(hx + bwi + 6, y + h - 29, sd, 12, shutdown_after, shutdown_after ? C_OKC : C_DIM, ALIGN_LEFT);
-        hx += bwi + 6 + gfx_text_width(sd, 12, 0) + 24;
-        bwi = gfx_button_icon(hx, y + h - 30, cancel_icon, 18);
-        gfx_text(hx + bwi + 6, y + h - 29, T(S_CANCEL), 12, 0, C_DIM, ALIGN_LEFT);
-        if (qn[0]) gfx_text(SCR_W / 2, y + 196, qn, 11, 1, RGBA8(255, 200, 120, 255), ALIGN_CENTER);
     }
+    bwi = gfx_button_icon(hx, y + h - 30, BTN_SQUARE, 18);
+    gfx_text(hx + bwi + 6, y + h - 29, sd, 12, shutdown_after, shutdown_after ? C_OKC : C_DIM, ALIGN_LEFT);
+    hx += bwi + 6 + gfx_text_width(sd, 12, 0) + 24;
+    bwi = gfx_button_icon(hx, y + h - 30, cancel_icon, 18);
+    gfx_text(hx + bwi + 6, y + h - 29, T(S_CANCEL), 12, 0, C_DIM, ALIGN_LEFT);
+    if (qn[0]) gfx_text(SCR_W / 2, y + 196, qn, 11, 1, RGBA8(255, 200, 120, 255), ALIGN_CENTER);
 }
 
 static void draw_progress_ops(void)
@@ -1160,10 +1207,13 @@ static void draw_progress_ops(void)
     draw_modal_frame(w, h, &x, &y);
     const char *t = s->op == OP_DELETE ? T(S_DELETING) : s->op == OP_MOVE ? T(S_MOVING) :
                     s->op == OP_EXTRACT ? T(S_EXTRACTING) : s->op == OP_BUILD ? T(S_BUILDING) :
-                    s->op == OP_UNARCHIVE ? T(S_UNARCHIVING) : s->op == OP_DISC ? T(S_DUMPING) : s->op == OP_UNISO ? T(S_T_UNISO) : T(S_COPYING);
+                    s->op == OP_UNARCHIVE ? T(S_UNARCHIVING) : s->op == OP_DISC ? T(S_DUMPING) : s->op == OP_UNISO ? T(S_T_UNISO) :
+                    s->op == OP_HASH ? T(S_HASHING) : s->op == OP_PATCH ? T(S_PATCHING) : s->op == OP_MKPATCH ? T(S_MKPATCHING) :
+                    s->op == OP_TIMX ? T(S_TIMX) : s->op == OP_SAVE_RESTORE ? T(S_RESTORING) : T(S_COPYING);
     gfx_text(SCR_W / 2, y + 20, t, 20, 1, C_TEXT, ALIGN_CENTER);
     char nfo[64];
-    if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE || s->op == OP_DISC || s->op == OP_UNISO) snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
+    if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE || s->op == OP_DISC || s->op == OP_UNISO || s->op == OP_TIMX) snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
+    else if (s->op == OP_HASH || s->op == OP_PATCH || s->op == OP_MKPATCH) nfo[0] = 0;
     else snprintf(nfo, sizeof(nfo), T(S_FILE_OF), (int)s->files_done, (int)s->files_total);
     gfx_text(SCR_W / 2, y + 48, nfo, 12, 0, C_DIM, ALIGN_CENTER);
     gfx_text_fit(SCR_W / 2, y + 74, w - 60, s->current, 15, 1, C_TEXT, ALIGN_CENTER);
@@ -1220,8 +1270,18 @@ static void draw_result_ops(void)
         draw_result_icon(cx, y + 62, 1, C_OKC);
         gfx_text(cx, y + 100, T(S_OPS_DONE), 20, 1, C_TEXT, ALIGN_CENTER);
         char nfo[64]; snprintf(nfo, sizeof(nfo), T(S_FILES), (int)s->files_done);
-        gfx_text(cx, y + 130, nfo, 12, 0, C_DIM, ALIGN_CENTER);
-        if (thm_installing && s->op == OP_COPY) {
+        if (s->op != OP_HASH && s->op != OP_TIMX && s->op != OP_PATCH && s->op != OP_MKPATCH) gfx_text(cx, y + 130, nfo, 12, 0, C_DIM, ALIGN_CENTER);
+        if (s->op == OP_HASH) {
+            draw_lines(cx, y + 124, ops_out_path(), 12, 1, C_TEXT, ALIGN_CENTER, 20);
+        } else if (s->op == OP_TIMX) {
+            char m[96]; snprintf(m, sizeof(m), T(S_TIM_FOUND), atoi(ops_out_extra()));
+            gfx_text(cx, y + 130, m, 13, 1, C_TEXT, ALIGN_CENTER);
+            char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), ops_out_path());
+            gfx_text_fit(cx, y + 152, w - 50, o, 11, 0, C_DIM, ALIGN_CENTER);
+        } else if (s->op == OP_PATCH || s->op == OP_MKPATCH) {
+            char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), ops_out_path());
+            gfx_text_fit(cx, y + 150, w - 50, o, 11, 0, C_DIM, ALIGN_CENTER);
+        } else if (thm_installing && s->op == OP_COPY) {
             draw_lines(cx, y + 150, T(S_THEME_APPLY), 11, 0, C_DIM, ALIGN_CENTER, 16);
         } else if (s->op == OP_EXTRACT || s->op == OP_BUILD || s->op == OP_UNARCHIVE || s->op == OP_DISC || s->op == OP_UNISO) {
             char o[1500]; snprintf(o, sizeof(o), "%s: %s", T(S_OUTPUT), s->op == OP_DISC ? ops_out_path() : ops_output);
@@ -1361,6 +1421,7 @@ static void draw_toast(void)
 }
 
 static void refresh_keep_wrapper(void);
+static void pane_refresh_other(void);
 
 /* =========================================================== viewers & editors */
 
@@ -1369,11 +1430,13 @@ static texture_t img_tex;
 static int img_idx, img_fill, img_err;
 static char img_name[256];
 
-static int is_image(const entry_t *e) { return e->type == FT_IMAGE && (!strcasecmp(ext_of(e->name), "png") || !strcasecmp(ext_of(e->name), "jpg") || !strcasecmp(ext_of(e->name), "jpeg")); }
+static int is_image(const entry_t *e) { return e->type == FT_IMAGE && (!strcasecmp(ext_of(e->name), "png") || !strcasecmp(ext_of(e->name), "jpg") || !strcasecmp(ext_of(e->name), "jpeg") || !strcasecmp(ext_of(e->name), "tim")); }
+static int img_clut, img_is_tim, img_tim_bpp;
 
 static void image_load(int idx)
 {
     if (img_tex) { gfx_free_texture(img_tex); img_tex = NULL; }
+    if (idx != img_idx) img_clut = 0;
     img_idx = idx; img_err = 0;
     snprintf(img_name, sizeof(img_name), "%s", ents[idx].name);
     if (ents[idx].size == 0 || ents[idx].size > 24 * 1024 * 1024) { img_err = 1; return; }
@@ -1386,7 +1449,11 @@ static void image_load(int idx)
     uint32_t got = 0;
     while (b && got < sz) { int64_t r = vfs_read(f, b + got, sz - got); if (r <= 0) break; got += (uint32_t)r; }
     vfs_close(f);
-    if (b && got == sz) {
+    img_is_tim = 0;
+    if (b && got == sz && !strcasecmp(ext_of(ents[idx].name), "tim")) {
+        tim_image_t ti;
+        if (tim_decode(b, sz, img_clut, &ti)) { img_tex = gfx_create_rgba(ti.w, ti.h, ti.rgba); img_is_tim = 1; img_tim_bpp = ti.bpp; tim_free(&ti); }
+    } else if (b && got == sz) {
         if (sz > 8 && b[0] == 0x89 && b[1] == 'P') img_tex = gfx_load_png_buffer(b, sz);
         else img_tex = gfx_load_jpg_buffer(b, sz);
     }
@@ -1413,7 +1480,8 @@ static void draw_image(void)
         float w = iw * sc, h = ih * sc;
         gfx_texture(img_tex, (SCR_W - w) / 2, (SCR_H - h) / 2, w, h, RGBA8(255, 255, 255, 255));
         char info[320];
-        snprintf(info, sizeof(info), "%s  \xC2\xB7  %dx%d", img_name, iw, ih);
+        if (img_is_tim) snprintf(info, sizeof(info), "%s  \xC2\xB7  %dx%d  \xC2\xB7  TIM %dbpp  \xC2\xB7  CLUT %d  (L2/R2)", img_name, iw, ih, img_tim_bpp, img_clut);
+        else snprintf(info, sizeof(info), "%s  \xC2\xB7  %dx%d", img_name, iw, ih);
         gfx_grad_v(0, 0, SCR_W, 44, RGBA8(0, 0, 0, 170), RGBA8(0, 0, 0, 0));
         gfx_text_fit(SCR_W / 2, 12, SCR_W - 60, info, 13, 1, C_TEXT, ALIGN_CENTER);
     } else {
@@ -1430,33 +1498,60 @@ static void handle_image(void)
     if (in_pressed & (R | B_R1)) image_step(1);
     if (in_pressed & (L | B_L1)) image_step(-1);
     if (in_pressed & B_SQU) img_fill = !img_fill;
+    if (img_is_tim && (in_pressed & (B_L2 | B_R2))) { img_clut += (in_pressed & B_R2) ? 1 : -1; if (img_clut < 0) img_clut = 0; image_load(img_idx); }
     if (in_pressed & (B_CANCEL | B_OK)) close_image();
 }
 
-/* ---------- music player ---------- */
-static int aud_idx;
+/* ---------- music player: folder playlist, shuffle / repeat, keeps playing in the background ---------- */
+#define PL_MAX 600
+static char (*pl)[1024];
+static int pl_n, pl_i, pl_shuffle, pl_repeat;   /* repeat: 0 all, 1 one, 2 off */
+static int aud_bg;                               /* playing while browsing */
 static char aud_name[256];
+
+static void pl_play(int i)
+{
+    if (!pl_n) return;
+    pl_i = (i % pl_n + pl_n) % pl_n;
+    const char *bn = strrchr(pl[pl_i], '/');
+    snprintf(aud_name, sizeof(aud_name), "%s", bn ? bn + 1 : pl[pl_i]);
+    if (!audio_play(pl[pl_i])) show_toast(T(S_AUDIO_ERR));
+}
 
 static void audio_open(int idx)
 {
-    char p[1400];
-    aud_idx = idx; sel = idx;
-    snprintf(aud_name, sizeof(aud_name), "%s", ents[idx].name);
-    path_join(p, sizeof(p), cwd, ents[idx].name);
-    if (!audio_play(p)) show_toast(T(S_AUDIO_ERR));
+    if (!pl) pl = malloc(sizeof(*pl) * PL_MAX);
+    if (!pl) return;
+    pl_n = 0; int start = 0;
+    for (int i = 0; i < ent_count && pl_n < PL_MAX; i++) {
+        if (ents[i].is_dir || !audio_is_supported(ents[i].name)) continue;
+        if (i == idx) start = pl_n;
+        path_join(pl[pl_n++], 1024, cwd, ents[i].name);
+    }
+    sel = idx;
+    aud_bg = 0;
+    pl_play(start);
 }
 
 static void audio_step(int d)
 {
-    for (int k = 1; k <= ent_count; k++) {
-        int i = (aud_idx + d * k + ent_count * 4) % ent_count;
-        if (!ents[i].is_dir && audio_is_supported(ents[i].name)) { audio_open(i); return; }
-    }
+    if (!pl_n) return;
+    if (pl_shuffle && pl_n > 1) { int r; do r = rand() % pl_n; while (r == pl_i); pl_play(r); }
+    else pl_play(pl_i + d);
+}
+
+/* called every frame: next track when one ends (also in the background) */
+static void audio_tick(void)
+{
+    if (!pl_n || audio_state() != AUD_ENDED) return;
+    if (pl_repeat == 1) pl_play(pl_i);
+    else if (pl_repeat == 2 && !pl_shuffle && pl_i == pl_n - 1) { audio_stop(); aud_bg = 0; }
+    else audio_step(1);
 }
 
 static void draw_audio(void)
 {
-    float x, y, w = 520, h = 300;
+    float x, y, w = 520, h = 320;
     draw_modal_frame(w, h, &x, &y);
     float cx = SCR_W / 2, t = gfx_frame() / 60.0f;
     int st = audio_state();
@@ -1469,7 +1564,8 @@ static void draw_audio(void)
     gfx_circle(cx, y + 78, 12, C_ACC1);
     gfx_circle(cx, y + 78, 4, RGBA8(20, 20, 40, 255));
 
-    gfx_text(cx, y + 138, T(S_NOW_PLAYING), 11, 1, C_DIM, ALIGN_CENTER);
+    char np[96]; snprintf(np, sizeof(np), "%s  \xC2\xB7  %d / %d", T(S_NOW_PLAYING), pl_i + 1, pl_n);
+    gfx_text(cx, y + 138, np, 11, 1, C_DIM, ALIGN_CENTER);
     gfx_text_fit(cx, y + 156, w - 60, aud_name, 16, 1, C_TEXT, ALIGN_CENTER);
 
     float lv[8];
@@ -1489,6 +1585,11 @@ static void draw_audio(void)
         if ((w - 120) * p > 6) gfx_rrect(x + 60, y + 240, (w - 120) * p, 6, 3, C_ACC1);
     }
     gfx_text(cx, y + 252, st == AUD_ERROR ? T(S_AUDIO_ERR) : line, 12, 0, C_DIM, ALIGN_CENTER);
+    char md[160];
+    snprintf(md, sizeof(md), "%s %s   \xC2\xB7   %s",
+             T(S_SHUFFLE), pl_shuffle ? T(S_ON) : T(S_OFF),
+             pl_repeat == 0 ? T(S_REPEAT_ALL) : pl_repeat == 1 ? T(S_REPEAT_ONE) : T(S_REPEAT_OFF));
+    gfx_text(cx, y + 276, md, 11, 1, RGBA8(170, 190, 255, 255), ALIGN_CENTER);
 }
 
 static void handle_audio(void)
@@ -1496,9 +1597,24 @@ static void handle_audio(void)
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed & B_OK) audio_toggle_pause();
     if (in_pressed & (R | B_R1)) audio_step(1);
-    if (in_pressed & (L | B_L1)) audio_step(-1);
-    if (in_pressed & B_CANCEL) { audio_stop(); ui = UI_BROWSE; }
-    else if (audio_state() == AUD_ENDED) audio_step(1);
+    if (in_pressed & (L | B_L1)) { if (pl_shuffle) audio_step(1); else pl_play(pl_i - 1); }
+    if (in_pressed & B_SELECT) pl_shuffle = !pl_shuffle;
+    if (in_pressed & B_START) pl_repeat = (pl_repeat + 1) % 3;
+    if (in_pressed & B_SQU) { audio_stop(); aud_bg = 0; pl_n = 0; ui = UI_BROWSE; return; }
+    if (in_pressed & B_CANCEL) { aud_bg = 1; ui = UI_BROWSE; }       /* keep playing while browsing */
+}
+
+/* small "now playing" pill while music plays in the background */
+static void draw_music_pill(void)
+{
+    if (!aud_bg || !pl_n) return;
+    int st = audio_state();
+    if (st != AUD_PLAYING && st != AUD_PAUSED) return;
+    char m[320]; snprintf(m, sizeof(m), "\xE2\x99\xAB  %s%s", aud_name, st == AUD_PAUSED ? "  \xE2\x8F\xB8" : "");
+    float w = gfx_text_width(m, 11, 1) + 30; if (w > 360) w = 360;
+    float x = SCR_W - 24 - w, y = 50;
+    gfx_rrect(x, y, w, 22, 11, RGBA8(60, 40, 140, 235));
+    gfx_text_fit(x + w / 2, y + 5, w - 20, m, 11, 1, C_TEXT, ALIGN_CENTER);
 }
 
 /* ---------- My Games ---------- */
@@ -1677,7 +1793,7 @@ static void video_start(int idx)
         if (find_movian()) { ask_launch(idx); return; }
         show_toast(T(S_VID_FMT_NO)); return;
     }
-    audio_stop();
+    audio_stop(); aud_bg = 0; pl_n = 0;
     snprintf(vid_name, sizeof(vid_name), "%s", ents[idx].name);
     snprintf(vid_path, sizeof(vid_path), "%s", p);
     vid_panel = 0;
@@ -2204,8 +2320,48 @@ static int hex_byte(uint64_t off, int *edited)
     return -1;
 }
 
+/* compare mode: a second file shown under each row, differing bytes in red */
+static int hex_cmp;
+static char hexb_path[1400];
+static uint64_t hexb_size, hexb_cache_off = ~0ULL;
+static uint8_t hexb_cache[512];
+static uint32_t hexb_cache_len;
+
+static int hexb_byte(uint64_t off)
+{
+    if (hexb_cache_off != hex_top) {
+        hexb_cache_off = hex_top; hexb_cache_len = 0;
+        vfs_file_t *f = vfs_open_read(hexb_path);
+        if (f) { if (vfs_seek(f, hex_top) == 0) { int64_t r = vfs_read(f, hexb_cache, sizeof(hexb_cache)); hexb_cache_len = r > 0 ? (uint32_t)r : 0; } vfs_close(f); }
+    }
+    if (off >= hexb_cache_off && off < hexb_cache_off + hexb_cache_len) return hexb_cache[off - hexb_cache_off];
+    return -1;
+}
+
+/* jump to the next differing byte after the cursor (scans up to 512 MB per press) */
+static void hex_next_diff(void)
+{
+    vfs_file_t *a = vfs_open_read(hex_path), *b = vfs_open_read(hexb_path);
+    uint8_t *ba = malloc(1 << 20), *bb = malloc(1 << 20);
+    uint64_t pos = hex_cur + 1, common = hex_size < hexb_size ? hex_size : hexb_size, limit = pos + 512ULL * 1024 * 1024;
+    int found = 0;
+    while (a && b && ba && bb && pos < common && pos < limit && !found) {
+        uint32_t n = common - pos > (1u << 20) ? (1u << 20) : (uint32_t)(common - pos);
+        if (vfs_seek(a, pos) || vfs_seek(b, pos)) break;
+        int64_t ra = vfs_read(a, ba, n), rb = vfs_read(b, bb, n);
+        if (ra <= 0 || rb <= 0) break;
+        int64_t m = ra < rb ? ra : rb;
+        for (int64_t i = 0; i < m; i++) if (ba[i] != bb[i]) { hex_cur = pos + i; found = 1; break; }
+        pos += m;
+    }
+    if (!found && pos >= common && hex_size != hexb_size && hex_cur + 1 < common) { hex_cur = common - 1; found = 1; }
+    free(ba); free(bb); if (a) vfs_close(a); if (b) vfs_close(b);
+    if (!found) show_toast(T(S_NO_MORE_DIFF));
+}
+
 static void hex_open(const char *path, uint64_t size)
 {
+    hex_cmp = 0;
     snprintf(hex_path, sizeof(hex_path), "%s", path);
     hex_size = size; hex_cur = hex_top = 0; hex_cache_off = ~0ULL; hex_edits = 0;
 }
@@ -2230,17 +2386,47 @@ static void tbl_cycle(void);
 static void draw_hex(void)
 {
     gfx_grad_v(0, 0, SCR_W, SCR_H, RGBA8(12, 14, 30, 255), RGBA8(18, 10, 34, 255));
+    const int rows = hex_cmp ? 9 : HEX_ROWS;
     if (hex_cur < hex_top) hex_top = hex_cur & ~15ULL;
-    if (hex_cur >= hex_top + HEX_ROWS * 16) hex_top = (hex_cur & ~15ULL) - (HEX_ROWS - 1) * 16;
+    if (hex_cur >= hex_top + rows * 16) hex_top = (hex_cur & ~15ULL) - (rows - 1) * 16;
     hex_fill_cache();
     char head[1600], sz[32];
     fmt_size(hex_size, sz, sizeof(sz));
+    if (hex_cmp) {
+        const char *na = strrchr(hex_path, '/'), *nb = strrchr(hexb_path, '/');
+        snprintf(head, sizeof(head), "A: %s   \xE2\x86\x94   B: %s", na ? na + 1 : hex_path, nb ? nb + 1 : hexb_path);
+    } else
     snprintf(head, sizeof(head), "%s  (%s)%s%s%s", hex_path, sz, tbl_n ? "  \xC2\xB7  TBL: " : "", tbl_n ? tbl_name : "", hex_edits ? "  \xE2\x80\xA2" : "");
     gfx_rrect(16, 12, SCR_W - 32, 30, 15, RGBA8(255, 255, 255, 16));
     gfx_text_fit(30, 18, SCR_W - 220, head, 12, 1, hex_edits ? RGBA8(255, 200, 120, 255) : C_TEXT, ALIGN_LEFT);
     char pos[48]; snprintf(pos, sizeof(pos), "%s 0x%08llX", T(S_OFFSET), (unsigned long long)hex_cur);
     gfx_text(SCR_W - 30, 18, pos, 12, 0, C_DIM, ALIGN_RIGHT);
 
+    if (hex_cmp) {
+        for (int r = 0; r < rows; r++) {
+            uint64_t ro = hex_top + r * 16;
+            if (ro >= hex_size && ro >= hexb_size) break;
+            float ly = 52 + r * 43;
+            char off[24]; snprintf(off, sizeof(off), "%08llX", (unsigned long long)ro);
+            gfx_text(24, ly, off, 11, 0, C_DIM, ALIGN_LEFT);
+            gfx_text(92, ly, "A", 10, 1, RGBA8(120, 170, 255, 255), ALIGN_LEFT);
+            gfx_text(92, ly + 19, "B", 10, 1, RGBA8(255, 170, 120, 255), ALIGN_LEFT);
+            for (int c = 0; c < 16; c++) {
+                uint64_t o = ro + c;
+                int va = o < hex_size ? hex_byte(o, NULL) : -2, vb = o < hexb_size ? hexb_byte(o) : -2;
+                int diff = va != vb;
+                float bx = 110 + c * 32 + (c >= 8 ? 8 : 0);
+                if (o == hex_cur) gfx_rrect(bx - 4, ly - 2, 28, 40, 5, C_ACC1);
+                else if (diff) gfx_rrect(bx - 4, ly - 2, 28, 40, 5, RGBA8(230, 60, 80, 90));
+                char hx[4];
+                snprintf(hx, sizeof(hx), va == -2 ? "--" : va < 0 ? "??" : "%02X", va);
+                gfx_text(bx, ly, hx, 12, diff, diff ? RGBA8(255, 150, 160, 255) : C_TEXT, ALIGN_LEFT);
+                snprintf(hx, sizeof(hx), vb == -2 ? "--" : vb < 0 ? "??" : "%02X", vb);
+                gfx_text(bx, ly + 19, hx, 12, diff, diff ? RGBA8(255, 150, 160, 255) : C_DIM, ALIGN_LEFT);
+            }
+        }
+        return;
+    }
     for (int r = 0; r < HEX_ROWS; r++) {
         uint64_t ro = hex_top + r * 16;
         if (ro >= hex_size) break;
@@ -2267,7 +2453,19 @@ static void draw_hex(void)
 
 static void handle_hex(void)
 {
-    uint64_t last = hex_size ? hex_size - 1 : 0;
+    uint64_t big = hex_cmp && hexb_size > hex_size ? hexb_size : hex_size;
+    uint64_t last = big ? big - 1 : 0;
+    if (hex_cmp) {
+        if (in_active & B_UP && hex_cur >= 16) hex_cur -= 16;
+        if (in_active & B_DOWN && hex_cur + 16 <= last) hex_cur += 16;
+        if (in_active & B_LEFT && hex_cur > 0) hex_cur--;
+        if (in_active & B_RIGHT && hex_cur < last) hex_cur++;
+        if (in_active & B_L2) hex_cur = hex_cur >= 144 ? hex_cur - 144 : 0;
+        if (in_active & B_R2) hex_cur = hex_cur + 144 <= last ? hex_cur + 144 : last;
+        if (in_pressed & (B_SELECT | B_OK)) hex_next_diff();
+        if (in_pressed & B_CANCEL) { hex_cmp = 0; ui = UI_BROWSE; }
+        return;
+    }
     if (in_active & B_UP && hex_cur >= 16) hex_cur -= 16;
     if (in_active & B_DOWN && hex_cur + 16 <= last) hex_cur += 16;
     if (in_active & B_LEFT && hex_cur > 0) hex_cur--;
@@ -2515,12 +2713,16 @@ static void refresh_keep(void)
     if (sel < ent_count) snprintf(keep, sizeof(keep), "%s", ents[sel].name);
     open_dir(cwd, keep);
     if (vol_count) vol_free = vfs_free_space(vols[vol_sel].root);
+    if (dual_on) pane_refresh_other();
 }
 
 static void refresh_keep_wrapper(void) { refresh_keep(); }
 
+#include "browser_extras.inc"
+
 static void run_menu_action(int m)
 {
+    if (extras_menu_action(m)) return;
     ui = UI_BROWSE;
     switch (m) {
     case M_OPEN: { char p[1400]; path_join(p, sizeof(p), cwd, ents[sel].name); open_dir(p, NULL); break; }
@@ -2630,12 +2832,12 @@ static void handle_browse(void)
 {
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
 
-    if (in_pressed & (B_L1 | B_R1)) select_volume(vol_sel + ((in_pressed & B_L1) ? -1 : 1));
+    if (in_pressed & (B_L1 | B_R1)) { if (dual_on) dual_switch(); else select_volume(vol_sel + ((in_pressed & B_L1) ? -1 : 1)); }
     if (in_pressed & B_TRI) { build_menu(); menu_anim = 0; ui = UI_MENU; return; }
     if (in_pressed & B_START) { set_sel = 0; open_modal(UI_SETTINGS); return; }
-    if (in_pressed & B_R3) { ui = UI_SCANNING; return; }
+    if ((in_released & B_R3) && !stick_combo) { ui = UI_SCANNING; return; }
 
-    if (in_pressed & B_L3) { games_open(); return; }
+    if ((in_released & B_L3) && !stick_combo) { games_open(); return; }
     if (!focus_list) {
         if (games_btn) {
             if (in_active & B_UP) games_btn = games_btn == 1 ? 2 : 0;
@@ -2660,7 +2862,7 @@ static void handle_browse(void)
     if (in_active & B_R2)   { sel += 7; if (sel >= ent_count) sel = ent_count - 1; }
 
     entry_t *e = &ents[sel];
-    if (in_pressed & B_SQU) { e->marked = !e->marked; if (sel < ent_count - 1) sel++; }
+    if (in_pressed & B_SQU) { e->marked = !e->marked; e->mark_seq = ++mark_ctr; if (sel < ent_count - 1) sel++; }
     if (in_pressed & B_SELECT) { int any = marked_count(); for (int i = 0; i < ent_count; i++) ents[i].marked = !any; }
     if (in_pressed & R) {
         if (e->is_dir) { char p[1400]; path_join(p, sizeof(p), cwd, e->name); open_dir(p, NULL); }
@@ -2702,6 +2904,20 @@ static void handle_settings(void)
     if (in_pressed & (B_CANCEL | B_START)) ui = UI_BROWSE;
 }
 
+/* install one PKG from any path (phone link, download manager) */
+static void install_single(const char *path)
+{
+    static inst_job_t hj[1];
+    memset(hj, 0, sizeof(hj));
+    snprintf(hj[0].path, sizeof(hj[0].path), "%s", path);
+    const char *bn = strrchr(path, '/'); bn = bn ? bn + 1 : path;
+    snprintf(hj[0].name, sizeof(hj[0].name), "%s", bn);
+    snprintf(hj[0].title, sizeof(hj[0].title), "%s", bn);
+    int d = 0; uint64_t sz = 0; vfs_stat(path, &d, &sz); hj[0].size = sz;
+    inst_reset();
+    if (inst_start(hj, 1, cfg.mode, 0)) { games_mode = 0; open_modal(UI_PROGRESS_INSTALL); }
+}
+
 #include "tools_ui.inc"
 
 static void handle_osk(void)
@@ -2733,6 +2949,25 @@ static void handle_osk(void)
         ui = UI_TOOLS;
         if (r == OSK_RESULT_OK && out[0]) { snprintf(sr_q, sizeof(sr_q), "%s", out); sr_run(); }
         else if (!sr_q[0] || !search_count()) tl_scr = TS_HUB;
+        return;
+    }
+    if (osk_purpose == 14) {
+        ui = UI_TOOLS;
+        if (r == OSK_RESULT_OK && out[0]) {
+            size_t l = strlen(out);
+            const char *dir = (l > 4 && !strcasecmp(out + l - 4, ".pkg")) || strstr(out, ".pkg?") ? PACKAGES_DIR : "/dev_hdd0/downloads";
+            if (dl_add(out, dir) >= 0) show_toast(T(S_DL_ADDED)); else show_toast(T(S_DL_BADURL));
+        }
+        return;
+    }
+    if (osk_purpose == 15) {
+        ui = UI_TOOLS;
+        if (r == OSK_RESULT_OK && out[0]) up_check_id(out);
+        return;
+    }
+    if (osk_purpose == 16) {
+        ui = UI_TOOLS;
+        if (r == OSK_RESULT_OK) nt_next_step(out);
         return;
     }
     if (osk_purpose == 8) {
@@ -2787,6 +3022,9 @@ int main(void)
     ya2d_paddata[0].ANA_L_V = 0x80;
     ents = calloc(MAX_ENTRIES, sizeof(entry_t));
     covers_init(APP_DIR "/covers");
+    fav_load();
+    dl_init(APP_DIR "/downloads.txt");
+    smb_shares_load(SMB_FILE);
     subdl_load_key(SUBKEY_FILE);
     covers_enable(cfg.covers);
     loader_start();
@@ -2807,20 +3045,24 @@ int main(void)
             next_usb_check = gfx_frame() + 120;
         }
 
+        audio_tick();
+        /* L3 + R3: screenshot */
+        if ((prev_down & (B_L3 | B_R3)) == (B_L3 | B_R3) && (in_pressed & (B_L3 | B_R3))) {
+            stick_combo = 1;
+            char sp[256];
+            time_t tt = time(NULL); struct tm *tmv = localtime(&tt);
+            mkdir("/dev_hdd0/photo", 0777);
+            snprintf(sp, sizeof(sp), "/dev_hdd0/photo/FileManager_%04d%02d%02d_%02d%02d%02d.png",
+                     tmv->tm_year + 1900, tmv->tm_mon + 1, tmv->tm_mday, tmv->tm_hour, tmv->tm_min, tmv->tm_sec);
+            if (gfx_screenshot(sp)) { snprintf(last_shot, sizeof(last_shot), "%s", sp); }
+        }
+        if (!(prev_down & (B_L3 | B_R3)) && !(in_released & (B_L3 | B_R3))) stick_combo = 0;
+        { int sr = gfx_screenshot_result(); if (sr) { char m[300]; snprintf(m, sizeof(m), "%s  %s", T(sr > 0 ? S_SHOT_SAVED : S_SHOT_FAIL), sr > 0 ? last_shot : ""); show_toast(m); } }
         /* phone link: install requests and status */
         {
             char ip[1024];
-            if (inst_status()->state != INST_RUNNING && ops_status()->state != OPS_RUNNING && (ui == UI_BROWSE || ui == UI_GAMES || ui == UI_TOOLS) && hub_take_install(ip, sizeof(ip))) {
-                static inst_job_t hj[1];
-                memset(hj, 0, sizeof(hj));
-                snprintf(hj[0].path, sizeof(hj[0].path), "%s", ip);
-                const char *bn = strrchr(ip, '/'); bn = bn ? bn + 1 : ip;
-                snprintf(hj[0].name, sizeof(hj[0].name), "%s", bn);
-                snprintf(hj[0].title, sizeof(hj[0].title), "%s", bn);
-                int d = 0; uint64_t sz = 0; vfs_stat(ip, &d, &sz); hj[0].size = sz;
-                inst_reset();
-                if (inst_start(hj, 1, cfg.mode, 0)) { games_mode = 0; open_modal(UI_PROGRESS_INSTALL); }
-            }
+            if (inst_status()->state != INST_RUNNING && ops_status()->state != OPS_RUNNING && (ui == UI_BROWSE || ui == UI_GAMES || ui == UI_TOOLS) && hub_take_install(ip, sizeof(ip)))
+                install_single(ip);
             if ((gfx_frame() & 31) == 0 && hub_running()) {
                 char js[600];
                 const inst_status_t *is = inst_status(); const ops_status_t *os = ops_status();
@@ -2953,6 +3195,7 @@ int main(void)
         case UI_VIDEO: handle_video(); break;
         case UI_GAMES: handle_games(); break;
         case UI_TOOLS: handle_tools(); break;
+        case UI_FAVS: handle_favs(); break;
         case UI_TEXT: handle_text(); break;
         case UI_HEX: handle_hex(); break;
         case UI_SFO:
@@ -2997,9 +3240,10 @@ int main(void)
             gfx_end_frame();
             continue;
         }
-        if (ui == UI_TOOLS || (ui == UI_OSK && osk_purpose == 5) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
+        if (ui == UI_TOOLS || (ui == UI_OSK && (osk_purpose == 5 || (osk_purpose >= 14 && osk_purpose <= 16))) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
             draw_background(t);
-            draw_tools();
+            /* don't read USB save icons while a background restore is using the same FAT/exFAT drive */
+            if (ui == UI_TOOLS || ui == UI_OSK) draw_tools();
             if (ui == UI_TOOLS) draw_tools_hints();
             else if (ui == UI_PROGRESS_OPS) draw_progress_ops();
             else if (ui == UI_RESULT_OPS) draw_result_ops();
@@ -3011,6 +3255,8 @@ int main(void)
         draw_header();
         draw_sidebar();
         draw_list();
+        if (dual_on) draw_other_pane();
+        draw_music_pill();
 
         if (ui == UI_BROWSE || ui == UI_MENU) {
             hint_t h[7]; int n = 0;
@@ -3035,8 +3281,11 @@ int main(void)
             draw_hints(h, 5);
         } else if (ui == UI_HEX || (ui == UI_OSK && osk_purpose >= 4 && osk_purpose <= 7 && osk_purpose != 5)) {
             draw_hex();
+            if (hex_cmp) { hint_t h[3] = { { ok_icon, S_NEXT_DIFF }, { BTN_SELECT, S_NEXT_DIFF }, { cancel_icon, S_BACK } }; draw_hints(h, 3); }
+            else {
             hint_t h[7] = { { ok_icon, S_EDIT_BYTE }, { BTN_SQUARE, S_TBL_FIND }, { BTN_TRIANGLE, S_TBL_WRITE }, { BTN_SELECT, S_TBL_LOAD }, { BTN_L1, S_JUMP }, { BTN_START, S_SAVE }, { cancel_icon, S_BACK } };
             draw_hints(h, 7);
+            }
         } else if (ui == UI_THEME) {
             draw_theme();
             hint_t h[2]; int n = 0;
@@ -3054,6 +3303,7 @@ int main(void)
         }
         switch (ui) {
             case UI_MENU: draw_menu(); break;
+            case UI_FAVS: draw_favs(); break;
             case UI_CONFIRM_INSTALL: draw_confirm_install(); break;
             case UI_CONFIRM_DELETE: draw_confirm_delete(); break;
             case UI_PROGRESS_INSTALL: draw_progress_install(); break;
@@ -3097,6 +3347,8 @@ int main(void)
     /* exiting: background workers (FTP, covers, thumbnails) are told to stop but not waited for —
      * a network request or a connected FTP client could otherwise hold the exit for many seconds */
     ftp_stop_async();
+    dl_shutdown();
+    smb_disconnect_all();
     hub_stop_async();
     covers_stop_async();
     loader_stop();          /* local files only: finishes quickly */

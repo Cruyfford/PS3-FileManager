@@ -35,6 +35,14 @@ jobs:
       working-directory: ya2d_ps3/libya2d
       run: make install
 
+    - name: Build libsmb2 (network shares)
+      continue-on-error: true
+      run: |
+        git clone --quiet https://github.com/sahlberg/libsmb2.git /tmp/libsmb2
+        cd /tmp/libsmb2 && git checkout --quiet 5fdd128012b384ed2a79293611d7f7dbaaa84cc7
+        cd lib && make -f Makefile.PS3_PPU install 2>&1 | tail -30
+        ls -la $PS3DEV/portlibs/ppu/lib/libsmb2.a
+
     - name: Build PKG
       run: make pkg
 
