@@ -58,6 +58,13 @@ void smb_share_remove(int i)
 }
 
 #ifdef HAVE_SMB2
+/* libsmb2 references gethostname(), which PSL1GHT lacks */
+int gethostname(char *name, size_t len)
+{
+    if (name && len) { strncpy(name, "PS3", len); name[len - 1] = 0; }
+    return 0;
+}
+
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
 #include <sys/mutex.h>
