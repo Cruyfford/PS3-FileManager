@@ -36,6 +36,7 @@
 #include "theme.h"
 #include "disc.h"
 #include "tools.h"
+#include "integrity.h"
 #include "subdl.h"
 #include "hubapi.h"
 #define SUBKEY_FILE APP_DIR "/subdl_key.txt"
@@ -984,8 +985,8 @@ static int is_system_path(const char *p)
 }
 
 /* ---------- context menu ---------- */
-enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_UNISO, M_TOOLS, M_SETTINGS, M_COUNT };
-static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_T_UNISO, S_TOOLS, S_SETTINGS };
+enum { M_OPEN, M_WEBMAN, M_MOVIAN, M_THEME, M_INSTALL, M_EXTRACT, M_BUILD, M_EDITSFO, M_EXTRACT_ARC, M_OPEN_TEXT, M_OPEN_HEX, M_CRC32, M_COPY, M_CUT, M_PASTE, M_RENAME, M_NEWDIR, M_DELETE, M_SELALL, M_PROPS, M_REFRESH, M_UNISO, M_TOOLS, M_SETTINGS, M_COUNT };
+static const int menu_label[M_COUNT] = { S_OPEN, S_WM_PLAY, S_PLAY_MOVIAN, S_THEME_INSTALL, S_INSTALL_PKG, S_EXTRACT, S_BUILD, S_EDIT_SFO, S_EXTRACT_ARC, S_OPEN_TEXT, S_OPEN_HEX, S_CRC32, S_COPY, S_CUT, S_PASTE, S_RENAME, S_NEWFOLDER, S_DELETE_ACT, S_SELECT_ALL, S_PROPS, S_REFRESH, S_T_UNISO, S_TOOLS, S_SETTINGS };
 static int menu_items[M_COUNT], menu_n;
 static int find_movian(void);
 static void ask_launch(int idx);
@@ -1028,7 +1029,7 @@ static int menu_enabled(int m)
         case M_BUILD: return cursor_is_pkg_folder();
         case M_EDITSFO: { char t[1400]; return cursor_sfo(t, sizeof(t)); }
         case M_EXTRACT_ARC: return has && !marked_count() && archive_kind(ents[sel].name) != ARC_NONE && cur_writable();
-        case M_OPEN_TEXT: case M_OPEN_HEX: return has && !marked_count() && !ents[sel].is_dir;
+        case M_OPEN_TEXT: case M_OPEN_HEX: case M_CRC32: return has && !marked_count() && !ents[sel].is_dir;
         case M_COPY: return has;
         case M_CUT: case M_DELETE: return has && cur_writable();
         case M_PASTE: return clip_n > 0 && cur_writable();
@@ -1052,7 +1053,7 @@ static void build_menu(void)
         if (m == M_BUILD && !cursor_is_pkg_folder()) continue;
         if (m == M_EDITSFO) { char t[1400]; if (!cursor_sfo(t, sizeof(t))) continue; }
         if (m == M_EXTRACT_ARC && !(ent_count && archive_kind(ents[sel].name) != ARC_NONE)) continue;
-        if ((m == M_OPEN_TEXT || m == M_OPEN_HEX) && !(ent_count && !ents[sel].is_dir)) continue;
+        if ((m == M_OPEN_TEXT || m == M_OPEN_HEX || m == M_CRC32) && !(ent_count && !ents[sel].is_dir)) continue;
         if (m == M_PASTE && !clip_n) continue;
         if (m == M_UNISO && !(ent_count && !marked_count() && !ents[sel].is_dir && iso_is_image(ents[sel].name))) continue;
         menu_items[menu_n++] = m;
@@ -2568,6 +2569,13 @@ static void run_menu_action(int m)
         if (ops_start_unarchive(src, dst)) open_modal(UI_PROGRESS_OPS);
         break;
     }
+    case M_CRC32: {
+        char p[1400];
+        path_join(p, sizeof(p), cwd, ents[sel].name);
+        if (integrity_start(p)) show_toast(T(S_CRC32_RUNNING));
+        else show_toast(T(S_CRC32_BUSY));
+        break;
+    }
     case M_OPEN_TEXT: case M_OPEN_HEX: {
         char p[1400];
         path_join(p, sizeof(p), cwd, ents[sel].name);
@@ -2928,6 +2936,7 @@ int main(void)
                     quit_req = 1;
                 }
                 play_after_copy = 0;
+                if (sv_work_pending) sv_work_completed = (s->state == OPS_DONE);
                 ops_reset();
                 if (jq_n && jq_start_next()) { open_modal(UI_PROGRESS_OPS); break; }
                 if (ops_ret_tools) { ops_ret_tools = 0; ui = UI_TOOLS; tools_after_ops(); break; }
@@ -2968,6 +2977,16 @@ int main(void)
         case UI_OSK: handle_osk(); break;
         }
 
+        {
+            uint32_t crc = 0;
+            int ck = integrity_poll(&crc);
+            if (ck) {
+                char msg[128];
+                if (ck > 0) snprintf(msg, sizeof(msg), "CRC32: %08X", (unsigned)crc);
+                else snprintf(msg, sizeof(msg), "%s", T(S_CRC32_FAIL));
+                show_toast(msg);
+            }
+        }
         if (ui == UI_BROWSE) lazy_parse();
 
         gfx_begin_frame();
@@ -2997,9 +3016,12 @@ int main(void)
             gfx_end_frame();
             continue;
         }
-        if (ui == UI_TOOLS || (ui == UI_OSK && osk_purpose == 5) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
+        if (ui == UI_TOOLS || (ui == UI_OSK && (osk_purpose == 5 || osk_purpose == 9)) || (ops_ret_tools && (ui == UI_PROGRESS_OPS || ui == UI_RESULT_OPS))) {
             draw_background(t);
-            draw_tools();
+            /* Never read USB save metadata or decode ICON0 while a background
+             * restore worker is accessing the same FAT/exFAT filesystem.
+             * FatFs file system calls may not be re-entrant on PS3. */
+            if (ui == UI_TOOLS || ui == UI_OSK) draw_tools();
             if (ui == UI_TOOLS) draw_tools_hints();
             else if (ui == UI_PROGRESS_OPS) draw_progress_ops();
             else if (ui == UI_RESULT_OPS) draw_result_ops();
@@ -3092,6 +3114,7 @@ int main(void)
 
     if (inst_status()->state == INST_RUNNING) { inst_cancel(); while (inst_status()->state == INST_RUNNING) usleep(10000); }
     if (ops_status()->state == OPS_RUNNING) { ops_cancel(); while (ops_status()->state == OPS_RUNNING) usleep(10000); }
+    integrity_shutdown();
     video_close();
     audio_stop();
     /* exiting: background workers (FTP, covers, thumbnails) are told to stop but not waited for —

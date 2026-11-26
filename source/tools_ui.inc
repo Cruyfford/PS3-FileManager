@@ -185,6 +185,35 @@ static void handle_tools_disc(void)
 typedef struct { char path[512]; char dir[64]; char title[128]; char sub[128]; char user[16]; int marked; } save_t;
 static save_t *sv; static int sv_n, sv_sel, sv_top, sv_tab, sv_dest;
 static char sv_user[16] = "00000001";
+static char sv_accounts[32][16];
+static int sv_naccounts, sv_account_sel, sv_restore_confirm;
+static int sv_action_open, sv_action_sel, sv_action_confirm;
+
+/* Explicit target account selection, instead of guessing the account with
+ * the largest number of existing saves. */
+static void sv_read_accounts(void)
+{
+    sv_naccounts=0;
+    sv_account_sel=0;
+    vfs_entry_t *users=malloc(sizeof(vfs_entry_t)*32);
+    if (!users) return;
+    int n=vfs_list("/dev_hdd0/home",users,32);
+    for (int i=0;i<n && sv_naccounts<32;i++) {
+        if (!users[i].is_dir || strlen(users[i].name)!=8) continue;
+        int ok=1;
+        for (int j=0;j<8;j++)
+            if (users[i].name[j]<'0' || users[i].name[j]>'9') { ok=0; break; }
+        if (!ok) continue;
+        snprintf(sv_accounts[sv_naccounts],sizeof(sv_accounts[0]),"%s",users[i].name);
+        if (!strcmp(users[i].name,sv_user)) sv_account_sel=sv_naccounts;
+        sv_naccounts++;
+    }
+    free(users);
+    if (sv_naccounts)
+        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
+    else sv_user[0]=0;
+}
+
 static texture_t sv_icon; static int sv_icon_for = -1;
 
 static void sv_add(const char *dir, const char *name, const char *user)
@@ -221,13 +250,12 @@ static void sv_scan(void)
     if (!e) return;
     if (sv_tab == 0) {
         vfs_entry_t *u = malloc(sizeof(vfs_entry_t) * 32);
-        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0, best = -1;
+        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0;
         for (int k = 0; k < nu; k++) {
             if (!u[k].is_dir) continue;
             char d[256]; snprintf(d, sizeof(d), "/dev_hdd0/home/%s/savedata", u[k].name);
-            int n = vfs_list(d, e, 1024), before = sv_n;
+            int n = vfs_list(d, e, 1024);
             for (int i = 0; i < n; i++) if (e[i].is_dir) sv_add(d, e[i].name, u[k].name);
-            if (sv_n - before > best) { best = sv_n - before; snprintf(sv_user, sizeof(sv_user), "%s", u[k].name); }
         }
         free(u);
     } else {
@@ -241,6 +269,29 @@ static void sv_scan(void)
     }
     free(e);
     qsort(sv, sv_n, sizeof(save_t), sv_cmp);
+}
+
+/* Save editing workspace: copies selected save away from the live user profile.
+ * This does NOT decrypt encrypted PFD files or resign hashes. */
+static int sv_work_pending;
+static int sv_work_completed;
+static char sv_work_path[1024];
+static void sv_copy_workspace(void)
+{
+    if (sv_n <= 0 || sv_sel < 0 || sv_sel >= sv_n) return;
+    static char src[1][1024];
+    char root[1024], dst[1024];
+    snprintf(root, sizeof(root), "/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE");
+    if (vfs_mkdir(root) != 0 && !vfs_exists(root)) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
+    snprintf(dst, sizeof(dst), "%s/edit_%llu", root, (unsigned long long)ops_now_ms());
+    if (vfs_mkdir(dst) != 0) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
+    snprintf(src[0], sizeof(src[0]), "%s", sv[sv_sel].path);
+    snprintf(sv_work_path, sizeof(sv_work_path), "%s/%s", dst, sv[sv_sel].dir);
+    sv_work_pending = 1;
+    sv_work_completed = 0;
+    ops_ret_tools = 1;
+    if (ops_start(OP_COPY, src, 1, dst)) open_modal(UI_PROGRESS_OPS);
+    else { sv_work_pending = 0; ops_ret_tools = 0; show_toast(T(S_SAVE_WORK_FAIL)); }
 }
 
 static int sv_usb[MAX_VOL], sv_nusb;
@@ -258,12 +309,19 @@ static void draw_tools_saves(void)
         L_text(tx + w / 2, 66, nm, 13, 1, t == sv_tab ? C_TEXT : C_DIM, ALIGN_CENTER);
         tx += w + 8;
     }
-    /* destination (backup tab) */
+    /* Explicit destination selector, including user account on USB restore. */
     if (sv_tab == 0) {
         char d[200];
         if (sv_nusb) { volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]]; snprintf(d, sizeof(d), "%s: %s%s", T(S_BACKUP_TO), v->label, sv_nusb > 1 ? "   \xE2\x97\x80 \xE2\x96\xB6" : ""); }
         else snprintf(d, sizeof(d), "%s", T(S_NO_USB));
         L_text_fit(SCR_W - 28, 66, 420, d, 12, 1, sv_nusb ? C_TEXT : RGBA8(255, 180, 60, 255), ALIGN_RIGHT);
+    } else {
+        char d[190];
+        snprintf(d,sizeof(d),(g_lang ? "استرجاع إلى الحساب: %s%s" : "Restore to PS3 user: %s%s"),
+                 sv_naccounts ? sv_user : "NO USER",
+                 sv_naccounts > 1 ? "  (LEFT / RIGHT)" : "");
+        L_text_fit(SCR_W-28,66,390,d,12,1,
+                   sv_naccounts ? C_TEXT : RGBA8(255,180,60,255),ALIGN_RIGHT);
     }
     float x = 28, y = 100, w = SCR_W - 56, ih = 44;
     int rows = 7;
@@ -294,14 +352,51 @@ static void draw_tools_saves(void)
     L_text_fit(px + pw / 2, y + 150, pw - 20, sv[sv_sel].title, 12, 1, C_TEXT, ALIGN_CENTER);
     char cnt[64]; snprintf(cnt, sizeof(cnt), "%d / %d", sv_sel + 1, sv_n);
     L_text(px + pw / 2, y + 260, cnt, 11, 0, C_DIM, ALIGN_CENTER);
+    L_text_fit(28, 411, SCR_W - 56, T(S_SAVE_WORK_COPY), 10, 1, C_TEXT, ALIGN_LEFT);
+    char pfd[1100];
+    snprintf(pfd, sizeof(pfd), "%s/PARAM.PFD", sv[sv_sel].path);
+    if (vfs_exists(pfd)) L_text_fit(28, 433, SCR_W - 56, T(S_SAVE_WORK_PFD), 9, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
+
+    if (sv_action_open) {
+        /* Controller-native context menu; stays inside 848x512 and above hints. */
+        const float x0=146, y0=105, ww=556, hh=326;
+        const char *options[4] = {
+            sv_tab ? (g_lang ? "نسخ إلى الجهاز (استرجاع)" : "Copy to PS3 (Restore)") : "Copy to USB (Backup)",
+            (g_lang ? "نسخ إلى مجلد التحرير" : "Copy to Editing Workspace"),
+            (g_lang ? "حذف (نقل إلى سلة المحذوفات)" : "Delete (Move to Trash)"),
+            (g_lang ? "إلغاء" : "Cancel")
+        };
+        gfx_rect(0,55,SCR_W,390,RGBA8(3,8,30,150));
+        L_rrect(x0,y0,ww,hh,20,RGBA8(20,32,68,252));
+        L_border(x0,y0,ww,hh,20,2,C_ACC1);
+        L_text_fit(x0+22,y0+15,ww-44,(g_lang ? "مدير الحفظ - الإجراءات" : "Save Data Manager - Actions"),19,1,C_TEXT,ALIGN_LEFT);
+        L_text_fit(x0+22,y0+48,ww-44,sv[sv_sel].title,12,0,C_DIM,ALIGN_LEFT);
+        for (int i=0;i<4;i++) {
+            float yy=y0+83+i*47;
+            if (sv_action_sel==i)
+                L_rrect_grad(x0+20,yy,ww-40,42,11,C_ACC1,C_ACC2);
+            else L_rrect(x0+20,yy,ww-40,42,11,RGBA8(255,255,255,14));
+            L_text_fit(x0+36,yy+12,ww-74,options[i],14,
+                       sv_action_sel==i,C_TEXT,ALIGN_LEFT);
+        }
+        if (sv_action_confirm) {
+            L_text_fit(x0+22,y0+281,ww-44,
+                sv_action_sel==2 ?
+                (g_lang ? "اضغط ✕ مرة أخرى لنقل الحفظ إلى سلة المحذوفات." : "Press X again to move this save to the Trash folder.") :
+                (g_lang ? "اضغط ✕ مرة أخرى للاسترجاع إلى الحساب المختار." : "Press X again to restore to the selected PS3 account."),
+                10,1,RGBA8(255,195,95,255),ALIGN_CENTER);
+        }
+    }
 }
 
-static void sv_run(void)
+static void sv_run(int only_selected)
 {
     static char srcs[OPS_MAX_SRC][1024];
     int n = 0, any = 0;
     for (int i = 0; i < sv_n; i++) if (sv[i].marked) any = 1;
-    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++) if (any ? sv[i].marked : i == sv_sel) snprintf(srcs[n++], 1024, "%s", sv[i].path);
+    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++)
+        if (only_selected ? i == sv_sel : (any ? sv[i].marked : i == sv_sel))
+            snprintf(srcs[n++], 1024, "%s", sv[i].path);
     if (!n) return;
     char dst[600];
     if (sv_tab == 0) {
@@ -309,25 +404,146 @@ static void sv_run(void)
         volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]];
         path_join(dst, sizeof(dst), v->root, "PS3"); vfs_mkdir(dst);
         path_join(dst, sizeof(dst), v->root, "PS3/SAVEDATA"); vfs_mkdir(dst);
-    } else snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
+        /* Do not silently overwrite a previous USB backup from the action menu. */
+        if (only_selected) {
+            char existing[1024];
+            path_join(existing,sizeof(existing),dst,sv[sv_sel].dir);
+            if (vfs_exists(existing)) {
+                show_toast((g_lang ? "توجد نسخة بنفس الاسم على USB، غيّر اسمها أولاً" : "Backup exists on USB: rename it before copying again"));
+                return;
+            }
+        }
+    } else {
+        if (!sv_naccounts || !sv_user[0]) {
+            show_toast((g_lang ? "لا يوجد حساب على الجهاز للاسترجاع" : "No PS3 user account for restore"));
+            return;
+        }
+        snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
+        if (vfs_mkdir(dst)!=0) {
+            show_toast((g_lang ? "تعذر فتح مجلد الحفظ في الجهاز" : "Could not open target PS3 savedata directory"));
+            return;
+        }
+    }
+    if (ops_status()->state == OPS_RUNNING) {
+        show_toast((g_lang ? "توجد عملية نسخ جارية" : "A file operation is already running"));
+        return;
+    }
     ops_ret_tools = 1;
-    if (ops_start(OP_COPY, srcs, n, dst)) open_modal(UI_PROGRESS_OPS); else ops_ret_tools = 0;
+    if (ops_start(sv_tab == 0 ? OP_COPY : OP_SAVE_RESTORE, srcs, n, dst))
+        open_modal(UI_PROGRESS_OPS);
+    else { ops_ret_tools = 0; show_toast((g_lang ? "تعذر بدء نقل الحفظ" : "Could not start save transfer")); }
+}
+
+/* Safe delete: remove only the selected save from the live save list.
+ * It remains recoverable in a trash directory on the SAME volume. */
+static void sv_trash_selected(void)
+{
+    if (!sv_n || sv_sel<0 || sv_sel>=sv_n) return;
+    if (ops_status()->state==OPS_RUNNING || ops_bg) {
+        show_toast((g_lang ? "انتظر حتى تنتهي العملية الجارية" : "Please complete the running file operation first"));
+        return;
+    }
+    char dest[1024],root[1024];
+    if (sv_tab==0) {
+        /* Keep a separate trash folder per PS3 user. */
+        if (strlen(sv[sv_sel].user)!=8) { show_toast((g_lang ? "حساب غير صالح" : "Invalid PS3 user")); return; }
+        snprintf(root,sizeof(root),"/dev_hdd0/CRUYFFORD_SAVE_TRASH");
+        if (vfs_mkdir(root)!=0 && !vfs_exists(root)) {
+            show_toast((g_lang ? "تعذر إنشاء سلة المحذوفات" : "Cannot create save Trash folder")); return;
+        }
+        snprintf(dest,sizeof(dest),"%s/%s",root,sv[sv_sel].user);
+    } else {
+        const char *marker=strstr(sv[sv_sel].path,"/PS3/SAVEDATA/");
+        if (!marker || marker==sv[sv_sel].path) {
+            show_toast((g_lang ? "مسار حفظ USB غير مدعوم" : "Unsupported USB save location")); return;
+        }
+        int prefix=(int)(marker-sv[sv_sel].path);
+        if (prefix<2 || prefix>(int)sizeof(root)-32) {
+            show_toast((g_lang ? "مسار USB غير صالح" : "Invalid USB drive location")); return;
+        }
+        snprintf(root,sizeof(root),"%.*s",prefix,sv[sv_sel].path);
+        snprintf(dest,sizeof(dest),"%s/CRUYFFORD_SAVE_TRASH",root);
+    }
+    if (vfs_mkdir(dest)!=0 && !vfs_exists(dest)) {
+        show_toast((g_lang ? "تعذر إنشاء سلة المحذوفات" : "Cannot create save Trash folder")); return;
+    }
+    static char picked[1][1024];
+    snprintf(picked[0],sizeof(picked[0]),"%s",sv[sv_sel].path);
+    ops_ret_tools=1;
+    if (ops_start(OP_SAVE_TRASH,picked,1,dest)) open_modal(UI_PROGRESS_OPS);
+    else { ops_ret_tools=0; show_toast((g_lang ? "تعذر نقل الحفظ إلى سلة المحذوفات" : "Could not move save to Trash")); }
+}
+
+static void sv_handle_actions(void)
+{
+    if (in_pressed&(B_CANCEL|B_TRI)) {
+        sv_action_open=0; sv_action_confirm=0; return;
+    }
+    if (in_active&B_UP) {
+        sv_action_sel=(sv_action_sel+3)%4; sv_action_confirm=0;
+    } else if (in_active&B_DOWN) {
+        sv_action_sel=(sv_action_sel+1)%4; sv_action_confirm=0;
+    }
+    if (!(in_pressed&B_OK)) return;
+    if (sv_action_sel==3) {
+        sv_action_open=0; sv_action_confirm=0; return;
+    }
+    if ((sv_action_sel==2 || (sv_action_sel==0 && sv_tab==1)) &&
+        !sv_action_confirm) {
+        sv_action_confirm=1; return;
+    }
+    int action=sv_action_sel;
+    sv_action_open=0;
+    sv_action_confirm=0;
+    if (action==0) sv_run(1);
+    else if (action==1) sv_copy_workspace();
+    else if (action==2) sv_trash_selected();
 }
 
 static void handle_tools_saves(void)
 {
+    if (sv_action_open) { sv_handle_actions(); return; }
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
-    if (in_pressed & (B_L1 | B_R1)) { sv_tab = !sv_tab; sv_scan(); return; }
-    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
+    if (in_pressed & (B_L1 | B_R1)) {
+        sv_tab = !sv_tab;
+        sv_restore_confirm=0;
+        if (sv_tab) sv_read_accounts();
+        sv_scan();
+        return;
+    }
+    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) {
+        sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
+    }
+    if (sv_tab == 1 && sv_naccounts > 1 && (in_pressed & (L | R))) {
+        sv_account_sel=(sv_account_sel+((in_pressed & R) ? 1 : sv_naccounts-1))%sv_naccounts;
+        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
+        sv_restore_confirm=0;
+    }
     if (!sv_n) return;
-    if (in_active & B_UP) sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1;
-    if (in_active & B_DOWN) sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0;
-    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; }
-    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; }
-    if (in_pressed & B_SQU) { sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
-    if (in_pressed & B_SELECT) { int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
-    if (in_pressed & B_OK) sv_run();
+    if (in_active & B_UP) { sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1; sv_restore_confirm=0; }
+    if (in_active & B_DOWN) { sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0; sv_restore_confirm=0; }
+    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; sv_restore_confirm=0; }
+    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; sv_restore_confirm=0; }
+    if (in_pressed & B_TRI) {
+        sv_restore_confirm=0;
+        sv_action_open=1; sv_action_sel=0; sv_action_confirm=0;
+        return;
+    }
+    if (in_pressed & B_SQU) { sv_restore_confirm=0; sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
+    if (in_pressed & B_SELECT) { sv_restore_confirm=0; int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
+    if (in_pressed & B_OK) {
+        if (sv_tab == 1 && !sv_restore_confirm) {
+            if (!sv_naccounts) { show_toast((g_lang ? "لا يوجد حساب على الجهاز للاسترجاع" : "No PS3 user account for restore")); return; }
+            sv_restore_confirm=1;
+            char hint[180];
+            snprintf(hint,sizeof(hint),(g_lang ? "استرجاع إلى الحساب %s؟ اضغط ✕ مرة أخرى للتأكيد" : "Restore to PS3 user %s? Press X again to confirm"),sv_user);
+            show_toast(hint);
+            return;
+        }
+        sv_restore_confirm=0;
+        sv_run(0);
+    }
 }
 
 /* ---------------------------------------------------------------- storage analyzer */
@@ -459,6 +675,7 @@ static void handle_tools_search(void)
     }
 }
 
+
 /* ---------------------------------------------------------------- dispatch */
 static void tools_open(void) { tl_scr = TS_HUB; tl_anim = 0; tl_scan_dests(); ui = UI_TOOLS; }
 
@@ -480,7 +697,16 @@ static void draw_tools_hints(void)
     switch (tl_scr) {
         case TS_HUB: h[n++] = (hint_t){ ok_icon, S_ENTER }; break;
         case TS_DISC: if (dc_state == 1) h[n++] = (hint_t){ ok_icon, S_CHANGE }; h[n++] = (hint_t){ BTN_SELECT, S_REFRESH }; break;
-        case TS_SAVES: h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP }; h[n++] = (hint_t){ BTN_SQUARE, S_MARK }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
+        case TS_SAVES:
+            if (sv_action_open) {
+                h[n++] = (hint_t){ ok_icon, S_ENTER };
+            } else {
+                h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP };
+                h[n++] = (hint_t){ BTN_TRIANGLE, S_MENU };
+                h[n++] = (hint_t){ BTN_SQUARE, S_MARK };
+                h[n++] = (hint_t){ BTN_L1, S_SWITCH };
+            }
+            break;
         case TS_SPACE: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_TRIANGLE, S_GO_TO }; break;
         case TS_SEARCH: h[n++] = (hint_t){ ok_icon, S_GO_TO }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; break;
     }
@@ -500,7 +726,11 @@ static void handle_tools(void)
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
-            else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_scan_usb(); sv_scan(); }
+            else if (tl_sel == 1) {
+                tl_scr = TS_SAVES;
+                sv_action_open=sv_action_confirm=sv_restore_confirm=0;
+                sv_read_accounts(); sv_scan_usb(); sv_scan();
+            }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
             else { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
         }
@@ -516,6 +746,12 @@ static void handle_tools(void)
 /* called when a tool's copy finishes */
 static void tools_after_ops(void)
 {
+    if (sv_work_pending) {
+        sv_work_pending = 0;
+        if (sv_work_completed && vfs_exists(sv_work_path)) { open_dir(sv_work_path, NULL); tl_scr = TS_HUB; ui = UI_BROWSE; }
+        else show_toast(T(S_SAVE_WORK_FAIL));
+        return;
+    }
     if (tl_scr == TS_SAVES) sv_scan();
 }
 
