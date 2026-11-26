@@ -359,11 +359,12 @@ static void draw_tools_saves(void)
 
     if (sv_action_open) {
         /* Controller-native context menu; stays inside 848x512 and above hints. */
-        const float x0=146, y0=105, ww=556, hh=326;
-        const char *options[4] = {
+        const float x0=146, y0=88, ww=556, hh=360;
+        const char *options[5] = {
             sv_tab ? (g_lang ? "نسخ إلى الجهاز (استرجاع)" : "Copy to PS3 (Restore)") : "Copy to USB (Backup)",
             (g_lang ? "نسخ إلى مجلد التحرير" : "Copy to Editing Workspace"),
             (g_lang ? "حذف (نقل إلى سلة المحذوفات)" : "Delete (Move to Trash)"),
+            (g_lang ? "فتح في Apollo (فك وإعادة التشفير)" : "Open in Apollo Save Tool (decrypt / resign)"),
             (g_lang ? "إلغاء" : "Cancel")
         };
         gfx_rect(0,55,SCR_W,390,RGBA8(3,8,30,150));
@@ -371,8 +372,8 @@ static void draw_tools_saves(void)
         L_border(x0,y0,ww,hh,20,2,C_ACC1);
         L_text_fit(x0+22,y0+15,ww-44,(g_lang ? "مدير الحفظ - الإجراءات" : "Save Data Manager - Actions"),19,1,C_TEXT,ALIGN_LEFT);
         L_text_fit(x0+22,y0+48,ww-44,sv[sv_sel].title,12,0,C_DIM,ALIGN_LEFT);
-        for (int i=0;i<4;i++) {
-            float yy=y0+83+i*47;
+        for (int i=0;i<5;i++) {
+            float yy=y0+80+i*47;
             if (sv_action_sel==i)
                 L_rrect_grad(x0+20,yy,ww-40,42,11,C_ACC1,C_ACC2);
             else L_rrect(x0+20,yy,ww-40,42,11,RGBA8(255,255,255,14));
@@ -380,7 +381,7 @@ static void draw_tools_saves(void)
                        sv_action_sel==i,C_TEXT,ALIGN_LEFT);
         }
         if (sv_action_confirm) {
-            L_text_fit(x0+22,y0+281,ww-44,
+            L_text_fit(x0+22,y0+hh-26,ww-44,
                 sv_action_sel==2 ?
                 (g_lang ? "اضغط ✕ مرة أخرى لنقل الحفظ إلى سلة المحذوفات." : "Press X again to move this save to the Trash folder.") :
                 (g_lang ? "اضغط ✕ مرة أخرى للاسترجاع إلى الحساب المختار." : "Press X again to restore to the selected PS3 account."),
@@ -474,18 +475,37 @@ static void sv_trash_selected(void)
     else { ops_ret_tools=0; show_toast((g_lang ? "تعذر نقل الحفظ إلى سلة المحذوفات" : "Could not move save to Trash")); }
 }
 
+/* Apollo Save Tool (bucanero, GPLv3) does PFD decrypt / encrypt / resign on HEN. */
+#define APOLLO_EBOOT "/dev_hdd0/game/NP0APOLLO/USRDIR/EBOOT.BIN"
+static void open_apollo(void)
+{
+    if (!vfs_exists(APOLLO_EBOOT)) {
+        show_toast(g_lang ? "Apollo Save Tool غير مثبت (github.com/bucanero/apollo-ps3)"
+                          : "Apollo Save Tool is not installed (github.com/bucanero/apollo-ps3)");
+        return;
+    }
+    if (ops_status()->state == OPS_RUNNING) {
+        show_toast(g_lang ? "انتظر حتى تنتهي العملية الجارية" : "Please complete the running file operation first");
+        return;
+    }
+    snprintf(pending_self, sizeof(pending_self), "%s", APOLLO_EBOOT);
+    pending_arg[0] = 0;
+    quit_req = 1;
+}
+
 static void sv_handle_actions(void)
 {
     if (in_pressed&(B_CANCEL|B_TRI)) {
         sv_action_open=0; sv_action_confirm=0; return;
     }
     if (in_active&B_UP) {
-        sv_action_sel=(sv_action_sel+3)%4; sv_action_confirm=0;
+        sv_action_sel=(sv_action_sel+4)%5; sv_action_confirm=0;
     } else if (in_active&B_DOWN) {
-        sv_action_sel=(sv_action_sel+1)%4; sv_action_confirm=0;
+        sv_action_sel=(sv_action_sel+1)%5; sv_action_confirm=0;
     }
     if (!(in_pressed&B_OK)) return;
-    if (sv_action_sel==3) {
+    if (sv_action_sel==3) { sv_action_open=0; sv_action_confirm=0; open_apollo(); return; }
+    if (sv_action_sel==4) {
         sv_action_open=0; sv_action_confirm=0; return;
     }
     if ((sv_action_sel==2 || (sv_action_sel==0 && sv_tab==1)) &&
