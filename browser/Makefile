@@ -19,7 +19,7 @@ include $(PSL1GHT)/ppu_rules
 TARGET		:=	NovaBrowser
 BUILD		:=	build
 SOURCES		:=	source
-SHARED		:=	gfx.c arabic.c osk.c vfs.c
+SHARED		:=	gfx.c arabic.c osk.c vfs.c pngw.c vfs_smb.c
 INCLUDES	:=	include
 PKGFILES	:=	$(CURDIR)/pkgfiles
 
