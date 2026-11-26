@@ -1,7 +1,7 @@
 /* =========================================================== Tools: disc copy, saves, space, search
  * (included by main.c — uses its drawing helpers and state) */
 
-enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH, TS_CATALOG };
+enum { TS_HUB, TS_DISC, TS_SAVES, TS_SPACE, TS_SEARCH };
 static int tl_scr, tl_sel, ops_ret_tools;
 static float tl_anim;
 
@@ -42,66 +42,29 @@ static void tl_spinner(float cx, float cy)
 
 /* ---------------------------------------------------------------- hub */
 static const int tl_items[4][2] = { { S_T_DISC, S_T_DISC_D }, { S_T_SAVES, S_T_SAVES_D }, { S_T_SPACE, S_T_SPACE_D }, { S_T_SEARCH, S_T_SEARCH_D } };
-static const uint32_t tl_cols[5][2] = {
+static const uint32_t tl_cols[4][2] = {
     { RGBA8(64, 120, 255, 255), RGBA8(150, 70, 255, 255) }, { RGBA8(40, 200, 150, 255), RGBA8(40, 120, 200, 255) },
-    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) },
-    { RGBA8(26, 193, 212, 255), RGBA8(60, 105, 230, 255) } };
-
-/* Return to the same middle-row card when navigating up from the wide store tile. */
-static int tl_hub_last_middle = 2;
+    { RGBA8(255, 160, 60, 255), RGBA8(224, 70, 110, 255) }, { RGBA8(180, 90, 255, 255), RGBA8(70, 120, 255, 255) } };
 
 static void draw_tools_hub(void)
 {
     tl_title(T(S_TOOLS), NULL);
-
-    /* PS3 UI is 848x512; hints begin at y=452.
-     * Put four regular tiles in a 2x2 grid, then a full-width ARCADIA tile.
-     * All five tiles finish by y=436 and stay clear of the hints/footer. */
-    const float margin = 26, col_gap = 20, row_gap = 14;
-    const float tile_w = (SCR_W - 2*margin - col_gap) / 2.0f;
-    const float tile_h = 112, top = 82;
-    const float wide_y = top + 2*(tile_h + row_gap);
-    const float wide_h = 102;
-    const float animate_y = (1.0f - tl_anim) * 10.0f;
-
-    for (int i = 0; i < 5; i++) {
-        const int wide = (i == 4);
-        const float x = wide ? margin : margin + (i % 2) * (tile_w + col_gap);
-        const float y = (wide ? wide_y : top + (i / 2) * (tile_h + row_gap)) + animate_y;
-        const float w = wide ? SCR_W - 2*margin : tile_w;
-        const float h = wide ? wide_h : tile_h;
-        const int on = (i == tl_sel);
-        const uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
-
-        if (on) gfx_glow(MXP(x + w/2), y + h/2, w * (wide ? 0.38f : 0.55f), WITH_ALPHA(ca, 75));
-        if (on) L_rrect_grad(x, y, w, h, 18, WITH_ALPHA(ca, 235), WITH_ALPHA(cb, 235));
-        else L_rrect(x, y, w, h, 18, C_PANEL);
-        L_border(x, y, w, h, 18, on ? 2 : 1, on ? RGBA8(255,255,255,190) : C_EDGE);
-
-        const float icon_x = MXP(x + 43), icon_y = y + h/2;
-        gfx_circle(icon_x, icon_y, wide ? 27 : 24,
-                   on ? RGBA8(255,255,255,55) : WITH_ALPHA(ca,75));
-        gfx_circle(icon_x, icon_y, wide ? 16 : 14,
-                   on ? RGBA8(255,255,255,80) : WITH_ALPHA(ca,110));
-        gfx_circle(icon_x, icon_y, 5, on ? C_TEXT : ca);
-
-        if (wide) {
-            L_text_fit(x+89, y+22, w-310, "ARCADIA Store", 23, 1, C_TEXT, ALIGN_LEFT);
-            L_text_fit(x+89, y+58, w-310,
-                       g_lang ? "كتالوج الألعاب والإضافات والثيمات والبرامج"
-                              : "Games, DLC, themes and homebrew catalog",
-                       12, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
-            const float tag_x = x+w-201, tag_y = y+30;
-            L_rrect(tag_x, tag_y, 178, 42, 12, RGBA8(7,22,58,on ? 170 : 125));
-            L_border(tag_x, tag_y, 178, 42, 12, 1, WITH_ALPHA(ca,140));
-            L_text_fit(tag_x+12, tag_y+13, 154, "GAMES | DLC | TOOLS",
-                       11, 1, C_TEXT, ALIGN_CENTER);
-        } else {
-            L_text_fit(x+84, y+29, w-101, T(tl_items[i][0]),
-                       18, 1, C_TEXT, ALIGN_LEFT);
-            L_text_fit(x+84, y+64, w-101, T(tl_items[i][1]),
-                       11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
-        }
+    float cw = 400, ch = 150, gx = (SCR_W - 2 * cw - 24) / 2, gy = 96;
+    for (int i = 0; i < 4; i++) {
+        float x = gx + (i % 2) * (cw + 24), y = gy + (i / 2) * (ch + 24) + (1 - tl_anim) * 24;
+        int on = i == tl_sel;
+        uint32_t ca = tl_cols[i][0], cb = tl_cols[i][1];
+        if (on) gfx_glow(MXP(x + cw / 2), y + ch / 2, cw * 0.6f, WITH_ALPHA(ca, 90));
+        if (on) L_rrect_grad(x, y, cw, ch, 20, WITH_ALPHA(ca, 235), WITH_ALPHA(cb, 235));
+        else L_rrect(x, y, cw, ch, 20, C_PANEL);
+        L_border(x, y, cw, ch, 20, on ? 2 : 1, on ? RGBA8(255, 255, 255, 170 + (int)(sinf(gfx_frame() * 0.1f) * 60)) : C_EDGE);
+        /* icon disc */
+        float ix = MXP(x + 52), iy = y + 56;
+        gfx_circle(ix, iy, 26, on ? RGBA8(255, 255, 255, 60) : WITH_ALPHA(ca, 70));
+        gfx_circle(ix, iy, 16, on ? RGBA8(255, 255, 255, 90) : WITH_ALPHA(ca, 120));
+        gfx_circle(ix, iy, 5, on ? C_TEXT : ca);
+        L_text(x + 96, y + 34, T(tl_items[i][0]), 19, 1, C_TEXT, ALIGN_LEFT);
+        L_text_fit(x + 96, y + 66, cw - 112, T(tl_items[i][1]), 11, 0, on ? C_TEXT : C_DIM, ALIGN_LEFT);
     }
 }
 
@@ -222,35 +185,6 @@ static void handle_tools_disc(void)
 typedef struct { char path[512]; char dir[64]; char title[128]; char sub[128]; char user[16]; int marked; } save_t;
 static save_t *sv; static int sv_n, sv_sel, sv_top, sv_tab, sv_dest;
 static char sv_user[16] = "00000001";
-static char sv_accounts[32][16];
-static int sv_naccounts, sv_account_sel, sv_restore_confirm;
-static int sv_action_open, sv_action_sel, sv_action_confirm;
-
-/* Explicit target account selection, instead of guessing the account with
- * the largest number of existing saves. */
-static void sv_read_accounts(void)
-{
-    sv_naccounts=0;
-    sv_account_sel=0;
-    vfs_entry_t *users=malloc(sizeof(vfs_entry_t)*32);
-    if (!users) return;
-    int n=vfs_list("/dev_hdd0/home",users,32);
-    for (int i=0;i<n && sv_naccounts<32;i++) {
-        if (!users[i].is_dir || strlen(users[i].name)!=8) continue;
-        int ok=1;
-        for (int j=0;j<8;j++)
-            if (users[i].name[j]<'0' || users[i].name[j]>'9') { ok=0; break; }
-        if (!ok) continue;
-        snprintf(sv_accounts[sv_naccounts],sizeof(sv_accounts[0]),"%s",users[i].name);
-        if (!strcmp(users[i].name,sv_user)) sv_account_sel=sv_naccounts;
-        sv_naccounts++;
-    }
-    free(users);
-    if (sv_naccounts)
-        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
-    else sv_user[0]=0;
-}
-
 static texture_t sv_icon; static int sv_icon_for = -1;
 
 static void sv_add(const char *dir, const char *name, const char *user)
@@ -287,12 +221,13 @@ static void sv_scan(void)
     if (!e) return;
     if (sv_tab == 0) {
         vfs_entry_t *u = malloc(sizeof(vfs_entry_t) * 32);
-        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0;
+        int nu = u ? vfs_list("/dev_hdd0/home", u, 32) : 0, best = -1;
         for (int k = 0; k < nu; k++) {
             if (!u[k].is_dir) continue;
             char d[256]; snprintf(d, sizeof(d), "/dev_hdd0/home/%s/savedata", u[k].name);
-            int n = vfs_list(d, e, 1024);
+            int n = vfs_list(d, e, 1024), before = sv_n;
             for (int i = 0; i < n; i++) if (e[i].is_dir) sv_add(d, e[i].name, u[k].name);
+            if (sv_n - before > best) { best = sv_n - before; snprintf(sv_user, sizeof(sv_user), "%s", u[k].name); }
         }
         free(u);
     } else {
@@ -306,29 +241,6 @@ static void sv_scan(void)
     }
     free(e);
     qsort(sv, sv_n, sizeof(save_t), sv_cmp);
-}
-
-/* Save editing workspace: copies selected save away from the live user profile.
- * This does NOT decrypt encrypted PFD files or resign hashes. */
-static int sv_work_pending;
-static int sv_work_completed;
-static char sv_work_path[1024];
-static void sv_copy_workspace(void)
-{
-    if (sv_n <= 0 || sv_sel < 0 || sv_sel >= sv_n) return;
-    static char src[1][1024];
-    char root[1024], dst[1024];
-    snprintf(root, sizeof(root), "/dev_hdd0/CRUYFFORD_SAVE_WORKSPACE");
-    if (vfs_mkdir(root) != 0 && !vfs_exists(root)) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
-    snprintf(dst, sizeof(dst), "%s/edit_%llu", root, (unsigned long long)ops_now_ms());
-    if (vfs_mkdir(dst) != 0) { show_toast(T(S_SAVE_WORK_FAIL)); return; }
-    snprintf(src[0], sizeof(src[0]), "%s", sv[sv_sel].path);
-    snprintf(sv_work_path, sizeof(sv_work_path), "%s/%s", dst, sv[sv_sel].dir);
-    sv_work_pending = 1;
-    sv_work_completed = 0;
-    ops_ret_tools = 1;
-    if (ops_start(OP_COPY, src, 1, dst)) open_modal(UI_PROGRESS_OPS);
-    else { sv_work_pending = 0; ops_ret_tools = 0; show_toast(T(S_SAVE_WORK_FAIL)); }
 }
 
 static int sv_usb[MAX_VOL], sv_nusb;
@@ -346,19 +258,12 @@ static void draw_tools_saves(void)
         L_text(tx + w / 2, 66, nm, 13, 1, t == sv_tab ? C_TEXT : C_DIM, ALIGN_CENTER);
         tx += w + 8;
     }
-    /* Explicit destination selector, including user account on USB restore. */
+    /* destination (backup tab) */
     if (sv_tab == 0) {
         char d[200];
         if (sv_nusb) { volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]]; snprintf(d, sizeof(d), "%s: %s%s", T(S_BACKUP_TO), v->label, sv_nusb > 1 ? "   \xE2\x97\x80 \xE2\x96\xB6" : ""); }
         else snprintf(d, sizeof(d), "%s", T(S_NO_USB));
         L_text_fit(SCR_W - 28, 66, 420, d, 12, 1, sv_nusb ? C_TEXT : RGBA8(255, 180, 60, 255), ALIGN_RIGHT);
-    } else {
-        char d[190];
-        snprintf(d,sizeof(d),"Restore to PS3 user: %s%s",
-                 sv_naccounts ? sv_user : "NO USER",
-                 sv_naccounts > 1 ? "  (LEFT / RIGHT)" : "");
-        L_text_fit(SCR_W-28,66,390,d,12,1,
-                   sv_naccounts ? C_TEXT : RGBA8(255,180,60,255),ALIGN_RIGHT);
     }
     float x = 28, y = 100, w = SCR_W - 56, ih = 44;
     int rows = 7;
@@ -389,51 +294,14 @@ static void draw_tools_saves(void)
     L_text_fit(px + pw / 2, y + 150, pw - 20, sv[sv_sel].title, 12, 1, C_TEXT, ALIGN_CENTER);
     char cnt[64]; snprintf(cnt, sizeof(cnt), "%d / %d", sv_sel + 1, sv_n);
     L_text(px + pw / 2, y + 260, cnt, 11, 0, C_DIM, ALIGN_CENTER);
-    L_text_fit(28, 411, SCR_W - 56, T(S_SAVE_WORK_COPY), 10, 1, C_TEXT, ALIGN_LEFT);
-    char pfd[1100];
-    snprintf(pfd, sizeof(pfd), "%s/PARAM.PFD", sv[sv_sel].path);
-    if (vfs_exists(pfd)) L_text_fit(28, 433, SCR_W - 56, T(S_SAVE_WORK_PFD), 9, 0, RGBA8(255, 190, 120, 255), ALIGN_LEFT);
-
-    if (sv_action_open) {
-        /* Controller-native context menu; stays inside 848x512 and above hints. */
-        const float x0=146, y0=105, ww=556, hh=326;
-        const char *options[4] = {
-            sv_tab ? "Copy to PS3 (Restore)" : "Copy to USB (Backup)",
-            "Copy to Editing Workspace",
-            "Delete (Move to Trash)",
-            "Cancel"
-        };
-        gfx_rect(0,55,SCR_W,390,RGBA8(3,8,30,150));
-        L_rrect(x0,y0,ww,hh,20,RGBA8(20,32,68,252));
-        L_border(x0,y0,ww,hh,20,2,C_ACC1);
-        L_text_fit(x0+22,y0+15,ww-44,"Save Data Manager - Actions",19,1,C_TEXT,ALIGN_LEFT);
-        L_text_fit(x0+22,y0+48,ww-44,sv[sv_sel].title,12,0,C_DIM,ALIGN_LEFT);
-        for (int i=0;i<4;i++) {
-            float yy=y0+83+i*47;
-            if (sv_action_sel==i)
-                L_rrect_grad(x0+20,yy,ww-40,42,11,C_ACC1,C_ACC2);
-            else L_rrect(x0+20,yy,ww-40,42,11,RGBA8(255,255,255,14));
-            L_text_fit(x0+36,yy+12,ww-74,options[i],14,
-                       sv_action_sel==i,C_TEXT,ALIGN_LEFT);
-        }
-        if (sv_action_confirm) {
-            L_text_fit(x0+22,y0+281,ww-44,
-                sv_action_sel==2 ?
-                "Press X again to move this save to the Trash folder." :
-                "Press X again to restore to the selected PS3 account.",
-                10,1,RGBA8(255,195,95,255),ALIGN_CENTER);
-        }
-    }
 }
 
-static void sv_run(int only_selected)
+static void sv_run(void)
 {
     static char srcs[OPS_MAX_SRC][1024];
     int n = 0, any = 0;
     for (int i = 0; i < sv_n; i++) if (sv[i].marked) any = 1;
-    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++)
-        if (only_selected ? i == sv_sel : (any ? sv[i].marked : i == sv_sel))
-            snprintf(srcs[n++], 1024, "%s", sv[i].path);
+    for (int i = 0; i < sv_n && n < OPS_MAX_SRC; i++) if (any ? sv[i].marked : i == sv_sel) snprintf(srcs[n++], 1024, "%s", sv[i].path);
     if (!n) return;
     char dst[600];
     if (sv_tab == 0) {
@@ -441,146 +309,25 @@ static void sv_run(int only_selected)
         volume_t *v = &vols[sv_usb[sv_dest % sv_nusb]];
         path_join(dst, sizeof(dst), v->root, "PS3"); vfs_mkdir(dst);
         path_join(dst, sizeof(dst), v->root, "PS3/SAVEDATA"); vfs_mkdir(dst);
-        /* Do not silently overwrite a previous USB backup from the action menu. */
-        if (only_selected) {
-            char existing[1024];
-            path_join(existing,sizeof(existing),dst,sv[sv_sel].dir);
-            if (vfs_exists(existing)) {
-                show_toast("Backup exists on USB: rename it before copying again");
-                return;
-            }
-        }
-    } else {
-        if (!sv_naccounts || !sv_user[0]) {
-            show_toast("No PS3 user account for restore");
-            return;
-        }
-        snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
-        if (vfs_mkdir(dst)!=0) {
-            show_toast("Could not open target PS3 savedata directory");
-            return;
-        }
-    }
-    if (ops_status()->state == OPS_RUNNING) {
-        show_toast("A file operation is already running");
-        return;
-    }
+    } else snprintf(dst, sizeof(dst), "/dev_hdd0/home/%s/savedata", sv_user);
     ops_ret_tools = 1;
-    if (ops_start(sv_tab == 0 ? OP_COPY : OP_SAVE_RESTORE, srcs, n, dst))
-        open_modal(UI_PROGRESS_OPS);
-    else { ops_ret_tools = 0; show_toast("Could not start save transfer"); }
-}
-
-/* Safe delete: remove only the selected save from the live save list.
- * It remains recoverable in a trash directory on the SAME volume. */
-static void sv_trash_selected(void)
-{
-    if (!sv_n || sv_sel<0 || sv_sel>=sv_n) return;
-    if (ops_status()->state==OPS_RUNNING || ops_bg) {
-        show_toast("Please complete the running file operation first");
-        return;
-    }
-    char dest[1024],root[1024];
-    if (sv_tab==0) {
-        /* Keep a separate trash folder per PS3 user. */
-        if (strlen(sv[sv_sel].user)!=8) { show_toast("Invalid PS3 user"); return; }
-        snprintf(root,sizeof(root),"/dev_hdd0/CRUYFFORD_SAVE_TRASH");
-        if (vfs_mkdir(root)!=0 && !vfs_exists(root)) {
-            show_toast("Cannot create save Trash folder"); return;
-        }
-        snprintf(dest,sizeof(dest),"%s/%s",root,sv[sv_sel].user);
-    } else {
-        const char *marker=strstr(sv[sv_sel].path,"/PS3/SAVEDATA/");
-        if (!marker || marker==sv[sv_sel].path) {
-            show_toast("Unsupported USB save location"); return;
-        }
-        int prefix=(int)(marker-sv[sv_sel].path);
-        if (prefix<2 || prefix>(int)sizeof(root)-32) {
-            show_toast("Invalid USB drive location"); return;
-        }
-        snprintf(root,sizeof(root),"%.*s",prefix,sv[sv_sel].path);
-        snprintf(dest,sizeof(dest),"%s/CRUYFFORD_SAVE_TRASH",root);
-    }
-    if (vfs_mkdir(dest)!=0 && !vfs_exists(dest)) {
-        show_toast("Cannot create save Trash folder"); return;
-    }
-    static char picked[1][1024];
-    snprintf(picked[0],sizeof(picked[0]),"%s",sv[sv_sel].path);
-    ops_ret_tools=1;
-    if (ops_start(OP_SAVE_TRASH,picked,1,dest)) open_modal(UI_PROGRESS_OPS);
-    else { ops_ret_tools=0; show_toast("Could not move save to Trash"); }
-}
-
-static void sv_handle_actions(void)
-{
-    if (in_pressed&(B_CANCEL|B_TRI)) {
-        sv_action_open=0; sv_action_confirm=0; return;
-    }
-    if (in_active&B_UP) {
-        sv_action_sel=(sv_action_sel+3)%4; sv_action_confirm=0;
-    } else if (in_active&B_DOWN) {
-        sv_action_sel=(sv_action_sel+1)%4; sv_action_confirm=0;
-    }
-    if (!(in_pressed&B_OK)) return;
-    if (sv_action_sel==3) {
-        sv_action_open=0; sv_action_confirm=0; return;
-    }
-    if ((sv_action_sel==2 || (sv_action_sel==0 && sv_tab==1)) &&
-        !sv_action_confirm) {
-        sv_action_confirm=1; return;
-    }
-    int action=sv_action_sel;
-    sv_action_open=0;
-    sv_action_confirm=0;
-    if (action==0) sv_run(1);
-    else if (action==1) sv_copy_workspace();
-    else if (action==2) sv_trash_selected();
+    if (ops_start(OP_COPY, srcs, n, dst)) open_modal(UI_PROGRESS_OPS); else ops_ret_tools = 0;
 }
 
 static void handle_tools_saves(void)
 {
-    if (sv_action_open) { sv_handle_actions(); return; }
     uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
     if (in_pressed & B_CANCEL) { tl_scr = TS_HUB; return; }
-    if (in_pressed & (B_L1 | B_R1)) {
-        sv_tab = !sv_tab;
-        sv_restore_confirm=0;
-        if (sv_tab) sv_read_accounts();
-        sv_scan();
-        return;
-    }
-    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) {
-        sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
-    }
-    if (sv_tab == 1 && sv_naccounts > 1 && (in_pressed & (L | R))) {
-        sv_account_sel=(sv_account_sel+((in_pressed & R) ? 1 : sv_naccounts-1))%sv_naccounts;
-        snprintf(sv_user,sizeof(sv_user),"%s",sv_accounts[sv_account_sel]);
-        sv_restore_confirm=0;
-    }
+    if (in_pressed & (B_L1 | B_R1)) { sv_tab = !sv_tab; sv_scan(); return; }
+    if (sv_tab == 0 && sv_nusb && (in_pressed & (L | R))) sv_dest = (sv_dest + ((in_pressed & R) ? 1 : sv_nusb - 1)) % sv_nusb;
     if (!sv_n) return;
-    if (in_active & B_UP) { sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1; sv_restore_confirm=0; }
-    if (in_active & B_DOWN) { sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0; sv_restore_confirm=0; }
-    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; sv_restore_confirm=0; }
-    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; sv_restore_confirm=0; }
-    if (in_pressed & B_TRI) {
-        sv_restore_confirm=0;
-        sv_action_open=1; sv_action_sel=0; sv_action_confirm=0;
-        return;
-    }
-    if (in_pressed & B_SQU) { sv_restore_confirm=0; sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
-    if (in_pressed & B_SELECT) { sv_restore_confirm=0; int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
-    if (in_pressed & B_OK) {
-        if (sv_tab == 1 && !sv_restore_confirm) {
-            if (!sv_naccounts) { show_toast("No PS3 user account for restore"); return; }
-            sv_restore_confirm=1;
-            char hint[180];
-            snprintf(hint,sizeof(hint),"Restore to PS3 user %s? Press X again to confirm",sv_user);
-            show_toast(hint);
-            return;
-        }
-        sv_restore_confirm=0;
-        sv_run(0);
-    }
+    if (in_active & B_UP) sv_sel = sv_sel > 0 ? sv_sel - 1 : sv_n - 1;
+    if (in_active & B_DOWN) sv_sel = sv_sel < sv_n - 1 ? sv_sel + 1 : 0;
+    if (in_active & B_L2) { sv_sel -= 7; if (sv_sel < 0) sv_sel = 0; }
+    if (in_active & B_R2) { sv_sel += 7; if (sv_sel >= sv_n) sv_sel = sv_n - 1; }
+    if (in_pressed & B_SQU) { sv[sv_sel].marked = !sv[sv_sel].marked; if (sv_sel < sv_n - 1) sv_sel++; }
+    if (in_pressed & B_SELECT) { int any = 0; for (int i = 0; i < sv_n; i++) any |= sv[i].marked; for (int i = 0; i < sv_n; i++) sv[i].marked = !any; }
+    if (in_pressed & B_OK) sv_run();
 }
 
 /* ---------------------------------------------------------------- storage analyzer */
@@ -712,246 +459,6 @@ static void handle_tools_search(void)
     }
 }
 
-
-/* ---------------------------------------------------------------- ARCADIA offline catalog browser
- * User-supplied TSV file on USB/HDD; does not provide licenses or auto-install.
- */
-static int arc_category = CAT_PS3, arc_sel, arc_top, arc_page, arc_confirm;
-static char arc_query[96], arc_source[1024];
-
-#define ARC_THUMB_SLOTS 8
-static texture_t arc_thumbs[ARC_THUMB_SLOTS];
-static char arc_thumb_ids[ARC_THUMB_SLOTS][64];
-static int arc_thumb_bad[ARC_THUMB_SLOTS];
-static int arc_cover_last_frame = -1;
-
-static void arc_thumbs_clear(void)
-{
-    for (int i=0; i<ARC_THUMB_SLOTS; i++) {
-        if (arc_thumbs[i]) gfx_free_texture(arc_thumbs[i]);
-        arc_thumbs[i] = NULL;
-        arc_thumb_ids[i][0] = 0;
-        arc_thumb_bad[i] = 0;
-    }
-}
-
-static texture_t arc_thumb_get(int row_index, const catalog_item_t *item)
-{
-    if (!item) return NULL;
-    int slot = row_index % ARC_THUMB_SLOTS;
-    char key[64];
-    snprintf(key,sizeof(key),"%s_%s",item->category,item->title_id[0]?item->title_id:item->title);
-    if (strcmp(arc_thumb_ids[slot],key)) {
-        if (arc_thumbs[slot]) gfx_free_texture(arc_thumbs[slot]);
-        arc_thumbs[slot] = NULL;
-        arc_thumb_bad[slot] = 0;
-        snprintf(arc_thumb_ids[slot],sizeof(arc_thumb_ids[slot]),"%s",key);
-    }
-    if (arc_thumbs[slot] || arc_thumb_bad[slot]) return arc_thumbs[slot];
-
-    char cp[700];
-    int state = covers_catalog_lookup_platform(item->title_id,item->title,item->category,cp,sizeof(cp));
-    if (state != CV_CACHED) return NULL; /* background job still fetching */
-    int frame=(int)gfx_frame();
-    if (arc_cover_last_frame == frame) return NULL; /* decode at most 1 cover per frame */
-    arc_cover_last_frame = frame;
-    vfs_file_t *f=vfs_open_read(cp);
-    if (!f) return NULL;
-    uint64_t sz=vfs_size(f);
-    if (sz < 64 || sz > 2*1024*1024) { vfs_close(f); arc_thumb_bad[slot]=1; return NULL; }
-    uint8_t *data=(uint8_t *)malloc((size_t)sz);
-    int64_t n=data ? vfs_read(f,data,(uint32_t)sz) : -1;
-    vfs_close(f);
-    if (data && n == (int64_t)sz) {
-        texture_t orig=(data[0]==0x89 && data[1]=='P') ?
-           gfx_load_png_buffer(data,(uint32_t)sz) : gfx_load_jpg_buffer(data,(uint32_t)sz);
-        arc_thumbs[slot]=gfx_make_thumb(orig,38,42);
-    }
-    free(data);
-    if (!arc_thumbs[slot]) arc_thumb_bad[slot]=1;
-    return arc_thumbs[slot];
-}
-
-
-static int arc_find_file(void)
-{
-    char p[1024];
-    snprintf(p, sizeof(p), "%s/ARCADIA_PS3_CATALOG.tsv", APP_DIR);
-    if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
-    if (catalog_set_source("/dev_hdd0/ARCADIA_PS3_CATALOG.tsv")) {
-        snprintf(arc_source,sizeof(arc_source),"%s","/dev_hdd0/ARCADIA_PS3_CATALOG.tsv"); return 1;
-    }
-    for (int i = 0; i < vol_count; i++) {
-        if (vols[i].kind != 1) continue;
-        path_join(p,sizeof(p),vols[i].root,"ARCADIA_PS3_CATALOG.tsv");
-        if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
-    }
-    for (int i = 0; i < 8; i++) {
-        snprintf(p,sizeof(p),"/dev_usb%03d/ARCADIA_PS3_CATALOG.tsv",i);
-        if (catalog_set_source(p)) { snprintf(arc_source,sizeof(arc_source),"%s",p); return 1; }
-    }
-    arc_source[0] = 0;
-    return 0;
-}
-static void arc_scan(void)
-{
-    arc_thumbs_clear();
-    arc_sel = arc_top = 0;
-    if (arc_source[0]) catalog_scan(arc_category,arc_query,arc_page);
-}
-static void arc_open(void)
-{
-    arc_page = 0; arc_sel = arc_top = arc_confirm = 0;
-    if (!arc_find_file()) show_toast("Copy ARCADIA_PS3_CATALOG.tsv (English V2) to USB root");
-    else arc_scan();
-    tl_scr = TS_CATALOG;
-}
-static void draw_tools_catalog(void)
-{
-    const char *cats[CAT_CATEGORY_COUNT]={"ALL","PS3","PS2","PSP","PS1","APPS","THEMES","DLC"};
-    int n=catalog_result_count();
-    int matched=catalog_total_matches();
-    char sub[160];
-    snprintf(sub,sizeof(sub),"%s | %d | %d/%d",cats[arc_category],matched,
-             arc_page+1,(matched+CAT_PAGE_SIZE-1)/CAT_PAGE_SIZE);
-    tl_title("ARCADIA STORE",sub);
-    if (!arc_source[0]) {
-        L_rrect(32,95,SCR_W-64,300,16,C_PANEL);
-        L_text(52,140,"Catalog not found",19,1,C_TEXT,ALIGN_LEFT);
-        L_text_fit(52,185,SCR_W-100,"ARCADIA_PS3_CATALOG.tsv",17,1,C_ACC1,ALIGN_LEFT);
-        L_text_fit(52,228,SCR_W-100,
-                   "Copy the English V2 TSV to USB root, then press SELECT",
-                   13,0,C_DIM,ALIGN_LEFT);
-        return;
-    }
-    L_text_fit(28,65,SCR_W-56,arc_source,9,0,C_DIM,ALIGN_LEFT);
-    char q[220];
-    snprintf(q,sizeof(q),"Search: %s",arc_query[0]?arc_query:"-");
-    L_text_fit(28,84,SCR_W-56,q,12,0,C_TEXT,ALIGN_LEFT);
-    const int rows=6;
-    if (arc_sel < arc_top) arc_top=arc_sel;
-    if (arc_sel >= arc_top+rows) arc_top=arc_sel-rows+1;
-    for(int i=arc_top; i<n && i<arc_top+rows; i++) {
-        const catalog_item_t *r=catalog_result(i);
-        if(!r) continue;
-        float y=111+(i-arc_top)*45;
-        int on=i==arc_sel;
-        if(on) L_grad_pill(28,y,SCR_W-56,42,9,WITH_ALPHA(C_ACC1,175),WITH_ALPHA(C_ACC2,175));
-        else L_rrect(28,y,SCR_W-56,42,9,C_PANEL);
-        texture_t cover=arc_thumb_get(i,r);
-        if(cover) {
-            gfx_texture(cover,MX(37,36),y+2,36,38,0xFFFFFFFF);
-        } else {
-            L_rrect(37,y+2,36,38,5,RGBA8(30,65,108,255));
-            L_text_fit(38,y+15,34,r->category,9,1,C_TEXT,ALIGN_CENTER);
-        }
-        L_text_fit(84,y+5,SCR_W-294,r->title,13,on,C_TEXT,ALIGN_LEFT);
-        char meta[120];
-        snprintf(meta,sizeof(meta),"%s  |  %s",r->title_id[0]?r->title_id:"-",r->size);
-        L_text_fit(84,y+25,SCR_W-294,meta,10,0,on?C_TEXT:C_DIM,ALIGN_LEFT);
-        L_text_fit(SCR_W-42,y+14,144,
-                   catalog_is_direct_pkg(r)?"X Download":"External page",
-                   10,on,on?C_TEXT:C_DIM,ALIGN_RIGHT);
-    }
-    if(!n) L_text(50,224,"No results in this section",17,1,C_DIM,ALIGN_LEFT);
-    /* Everything below remains inside the native 512-pixel frame. */
-    L_rrect(28,391,SCR_W-56,55,9,RGBA8(12,35,64,245));
-    int state=catalog_download_state();
-    if(state==CAT_DL_RUNNING) {
-        uint64_t done=0,total=0;
-        catalog_download_progress(&done,&total);
-        char d[30],t[30],msg[190];
-        fmt_size(done,d,sizeof(d));
-        if(total) fmt_size(total,t,sizeof(t)); else snprintf(t,sizeof(t),"?");
-        snprintf(msg,sizeof(msg),"Downloading: %s / %s",d,t);
-        L_text_fit(41,399,SCR_W-82,msg,12,1,C_TEXT,ALIGN_LEFT);
-        if(total) {
-            float progress=(float)done/(float)total;
-            if(progress>1) progress=1;
-            if(progress<0) progress=0;
-            L_rrect(41,425,SCR_W-82,9,5,RGBA8(32,50,83,255));
-            L_rrect(41,425,(SCR_W-82)*progress,9,5,C_ACC1);
-        }
-        /* Triangle cancels the transfer; shown in controller hints. */
-    } else if(state!=CAT_DL_IDLE) {
-        L_text_fit(41,399,SCR_W-82,
-                   state==CAT_DL_DONE?"Download complete — SELECT opens folder":
-                   state==CAT_DL_CANCELLED?"Download cancelled":"Download failed",
-                   12,1,state==CAT_DL_DONE?C_OKC:C_TEXT,ALIGN_LEFT);
-        L_text_fit(41,422,SCR_W-82,catalog_download_message(),10,0,C_DIM,ALIGN_LEFT);
-    } else if(n) {
-        const catalog_item_t *it=catalog_result(arc_sel);
-        L_text_fit(41,399,SCR_W-82,
-                   it && catalog_is_direct_pkg(it)?
-                   "X: Download direct PKG/P3T to /dev_hdd0/packages":
-                   "Unavailable as direct download: external page or unsupported link",
-                   12,1,C_TEXT,ALIGN_LEFT);
-        L_text_fit(41,421,SCR_W-82,
-                   "Square: Search | L1/R1: Section | L2/R2: Page | R3: Retry cover",
-                   10,0,C_DIM,ALIGN_LEFT);
-    } else L_text_fit(41,407,SCR_W-82,"Select a section or search for a title",11,0,C_DIM,ALIGN_LEFT);
-}
-static void handle_tools_catalog(void)
-{
-    if(in_pressed & B_CANCEL) {
-        arc_thumbs_clear();
-        tl_scr=TS_HUB;
-        return;
-    }
-    if(in_pressed & (B_L1|B_R1)) {
-        arc_category=(arc_category+((in_pressed&B_L1)?CAT_CATEGORY_COUNT-1:1))%CAT_CATEGORY_COUNT;
-        arc_page=0;arc_scan();
-        return;
-    }
-    if(in_pressed & B_SQU) {
-        osk_purpose=9;
-        if(osk_open("Search ARCADIA",arc_query)) ui=UI_OSK;
-        return;
-    }
-    if(in_pressed & B_SELECT) {
-        if(catalog_download_state()==CAT_DL_DONE) {
-            arc_thumbs_clear();
-            for(int i=0;i<vol_count;i++) if(vols[i].kind==0){vol_sel=i;break;}
-            ui=UI_BROWSE;focus_list=1;
-            open_dir("/dev_hdd0/packages",catalog_download_name());
-        } else if(arc_find_file()) {arc_page=0;arc_scan();}
-        return;
-    }
-    if(catalog_download_state()==CAT_DL_RUNNING && (in_pressed&B_TRI)) {
-        catalog_download_cancel();
-        show_toast("Cancelling download...");
-        return;
-    }
-    int n=catalog_result_count();
-    if (in_pressed&B_R3 && n) {
-        const catalog_item_t *it=catalog_result(arc_sel);
-        if (it) {
-            covers_catalog_retry(it->title_id,it->category);
-            arc_thumbs_clear();
-            show_toast("Retrying cover download");
-        }
-        return;
-    }
-    if(in_active&B_UP) arc_sel=arc_sel>0?arc_sel-1:n?n-1:0;
-    if(in_active&B_DOWN) arc_sel=arc_sel<n-1?arc_sel+1:0;
-    if((in_pressed&B_R2) && (arc_page+1)*CAT_PAGE_SIZE<catalog_total_matches()){
-        arc_page++;arc_scan();return;
-    }
-    if((in_pressed&B_L2) && arc_page){arc_page--;arc_scan();return;}
-    if((in_pressed&B_OK) && n) {
-        const catalog_item_t *it=catalog_result(arc_sel);
-        if(catalog_download_state()==CAT_DL_RUNNING) {
-            show_toast("A download is already active");
-        } else if(!catalog_is_direct_pkg(it)) {
-            show_toast("External page or unsupported direct file link");
-        } else if(catalog_download_start(it)) {
-            show_toast("Download started (check progress below)");
-        } else {
-            show_toast("Could not start download");
-        }
-    }
-}
-
 /* ---------------------------------------------------------------- dispatch */
 static void tools_open(void) { tl_scr = TS_HUB; tl_anim = 0; tl_scan_dests(); ui = UI_TOOLS; }
 
@@ -964,7 +471,6 @@ static void draw_tools(void)
         case TS_SAVES: draw_tools_saves(); break;
         case TS_SPACE: draw_tools_space(); break;
         case TS_SEARCH: draw_tools_search(); break;
-        case TS_CATALOG: draw_tools_catalog(); break;
     }
 }
 
@@ -974,19 +480,9 @@ static void draw_tools_hints(void)
     switch (tl_scr) {
         case TS_HUB: h[n++] = (hint_t){ ok_icon, S_ENTER }; break;
         case TS_DISC: if (dc_state == 1) h[n++] = (hint_t){ ok_icon, S_CHANGE }; h[n++] = (hint_t){ BTN_SELECT, S_REFRESH }; break;
-        case TS_SAVES:
-            if (sv_action_open) {
-                h[n++] = (hint_t){ ok_icon, S_ENTER };
-            } else {
-                h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP };
-                h[n++] = (hint_t){ BTN_TRIANGLE, S_MENU };
-                h[n++] = (hint_t){ BTN_SQUARE, S_MARK };
-                h[n++] = (hint_t){ BTN_L1, S_SWITCH };
-            }
-            break;
+        case TS_SAVES: h[n++] = (hint_t){ ok_icon, sv_tab ? S_RESTORE : S_BACKUP }; h[n++] = (hint_t){ BTN_SQUARE, S_MARK }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
         case TS_SPACE: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_TRIANGLE, S_GO_TO }; break;
         case TS_SEARCH: h[n++] = (hint_t){ ok_icon, S_GO_TO }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; break;
-        case TS_CATALOG: h[n++] = (hint_t){ ok_icon, S_OPEN }; h[n++] = (hint_t){ BTN_SQUARE, S_NEW_SEARCH }; h[n++] = (hint_t){ BTN_L1, S_SWITCH }; break;
     }
     h[n++] = (hint_t){ cancel_icon, S_BACK };
     draw_hints(h, n);
@@ -998,32 +494,15 @@ static void handle_tools(void)
     case TS_HUB: {
         uint32_t L = RTL() ? B_RIGHT : B_LEFT, R = RTL() ? B_LEFT : B_RIGHT;
         if (in_pressed & B_CANCEL) { ui = UI_BROWSE; return; }
-        /* Navigate 2x2 regular tiles with the full-width store below them. */
-        if (in_active & R) {
-            if (tl_sel == 0 || tl_sel == 2) tl_sel++;
-        } else if (in_active & L) {
-            if (tl_sel == 1 || tl_sel == 3) tl_sel--;
-        } else if (in_active & B_UP) {
-            if (tl_sel == 4) tl_sel = tl_hub_last_middle;
-            else if (tl_sel == 2 || tl_sel == 3) tl_sel -= 2;
-        } else if (in_active & B_DOWN) {
-            if (tl_sel == 0 || tl_sel == 1) tl_sel += 2;
-            else if (tl_sel == 2 || tl_sel == 3) {
-                tl_hub_last_middle = tl_sel;
-                tl_sel = 4;
-            }
-        }
+        if (in_active & R) tl_sel = (tl_sel + 1) % 4;
+        if (in_active & L) tl_sel = (tl_sel + 3) % 4;
+        if (in_active & (B_UP | B_DOWN)) tl_sel = (tl_sel + 2) % 4;
         if (in_pressed & B_OK) {
             tl_scan_dests();
             if (tl_sel == 0) { tl_scr = TS_DISC; dc_dest = 0; for (int k = 0; k < tl_ndest; k++) if (vols[tl_dests[k]].kind == 1) { dc_dest = k; break; } dc_start_probe(); }
-            else if (tl_sel == 1) {
-                tl_scr = TS_SAVES;
-                sv_action_open=sv_action_confirm=sv_restore_confirm=0;
-                sv_read_accounts(); sv_scan_usb(); sv_scan();
-            }
+            else if (tl_sel == 1) { tl_scr = TS_SAVES; sv_scan_usb(); sv_scan(); }
             else if (tl_sel == 2) { tl_scr = TS_SPACE; snprintf(sp_root, sizeof(sp_root), "%s", cwd[0] ? cwd : "/dev_hdd0"); sp_open(sp_root); }
-            else if (tl_sel == 3) { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
-            else arc_open();
+            else { tl_scr = TS_SEARCH; search_cancel(); sr_begin(); }
         }
         break;
     }
@@ -1031,19 +510,12 @@ static void handle_tools(void)
     case TS_SAVES: handle_tools_saves(); break;
     case TS_SPACE: handle_tools_space(); break;
     case TS_SEARCH: handle_tools_search(); break;
-    case TS_CATALOG: handle_tools_catalog(); break;
     }
 }
 
 /* called when a tool's copy finishes */
 static void tools_after_ops(void)
 {
-    if (sv_work_pending) {
-        sv_work_pending = 0;
-        if (sv_work_completed && vfs_exists(sv_work_path)) { open_dir(sv_work_path, NULL); tl_scr = TS_HUB; ui = UI_BROWSE; }
-        else show_toast(T(S_SAVE_WORK_FAIL));
-        return;
-    }
     if (tl_scr == TS_SAVES) sv_scan();
 }
 

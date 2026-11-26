@@ -54,7 +54,7 @@ jobs:
         if-no-files-found: error
 
     - name: Publish release
-      if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      if: github.event_name != 'pull_request'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: latest
