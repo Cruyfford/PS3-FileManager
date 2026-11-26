@@ -19,12 +19,3 @@ int  covers_generation(void);
 void covers_stop_async(void);
 /* cleaned search title from a video file name ("The.Matrix.1999.1080p.mkv" -> "The Matrix 1999") */
 void covers_video_query(const char *name, char *out, int n);
-
-/* Catalog covers from title IDs, cached locally or fetched asynchronously. */
-int covers_catalog_lookup(const char *title_id, char *out_path, int n);
-
-/* Catalog covers respect platform-specific artwork sources, not only PS3 GameTDB. */
-int covers_catalog_lookup_platform(const char *title_id, const char *title,
-                                   const char *platform, char *out, int n);
-/* Clear cached failed lookups to retry after reconnecting the console. */
-void covers_catalog_retry(const char *title_id, const char *platform);
